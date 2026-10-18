@@ -91,6 +91,29 @@ procedure(pjt092DrillJson(obj)
   )
 )
 
+; v0.9.3 diagnostic Padstack geometry. These records are NOT manufacturing polarity ops.
+; Return nil for no/NULL/zero-size pad; catch Allegro query failures without aborting export.
+procedure(pjt093PadDiagnostic(obj ownerType ownerId netName layerName kindName)
+  let((answer geom bounds dx dy figure)
+    geom = nil
+    answer = errset(axlDBGetPad(obj layerName kindName) t)
+    when(answer geom = car(answer))
+    when(geom && geom->bBox
+      bounds = geom->bBox
+      dx = xCoord(cadr(bounds)) - xCoord(car(bounds))
+      dy = yCoord(cadr(bounds)) - yCoord(car(bounds))
+      figure = geom->figureName
+      when(numberp(dx) && numberp(dy) && dx > 0 && dy > 0 && figure && figure != "NULL"
+        return(sprintf(nil "{\"owner_type\":%s,\"owner_id\":%s,\"net\":%s,\"layer\":%s,\"kind\":%s,\"position\":%s,\"rotation\":%s,\"shape\":%s,\"size\":[%s,%s],\"bbox_raw\":%s,\"geometry_verified\":false}"
+          pjt08Quote(ownerType) pjt08Quote(ownerId) pjt08Quote(netName)
+          pjt08Quote(layerName) pjt08Quote(kindName) pjt08XY(obj->xy)
+          pjt08Num(obj->rotation) pjt08Quote(figure) pjt08Num(dx) pjt08Num(dy) pjt08Pair(bounds)))
+      )
+    )
+    nil
+  )
+)
+
 procedure(pcbExport()
   let((dsn port log layers layerNo sub sym comp compdef props prop value package refdes
       side net branch child seg netName nLayers nComps nSeg nShapes nVias nPins
@@ -98,7 +121,8 @@ procedure(pcbExport()
       nShapeVoidSeg nNoNetShapes shapeQuery shapeFound shapeName
       pin physIdx pinNo pinNet pad padQuery padLayer padBox padWidth padHeight
       padFig nPhysicalPins nPadRecords nPadErrors nPinsWithoutNumber pinName pinRotation nTextGraphics nTextFromSymbols nTextFromDesign textObj
-      viaObj viaSeen viaCount viaPadCount viaNullPadCount viaDupCount viaPadNum viaPadLayer viaBox viaWidth viaHeight viaQuery viaFig viaNet viaOrd)
+      viaObj viaSeen viaCount viaPadCount viaNullPadCount viaDupCount viaPadNum viaPadLayer viaBox viaWidth viaHeight viaQuery viaFig viaNet viaOrd
+      diagIdx diagPinIdx diagViaIdx diagSeen diagKind diagLayer diagJson diagNet diagAntiCount diagThermalCount diagSkipped diagOwner)
     dsn = axlDBGetDesign()
     unless(dsn error("pcbExport: open a PCB design first.\n"))
     layers = axlGetParam("paramLayerGroup:ETCH")->groupMembers
@@ -236,6 +260,58 @@ procedure(pcbExport()
                 )
               )
               fprintf(port "]}")
+            )
+          )
+        )
+      )
+    )
+    ; Diagnostic shapes are physically associated with PIN/VIA, never with a
+    ; particular film polarity. Keep separate from actual REGULAR copper pads.
+    fprintf(port "\n],\n\"padstack_diagnostics\":[\n")
+    diagIdx = 0 diagPinIdx = 0 diagViaIdx = 0
+    diagAntiCount = 0 diagThermalCount = 0 diagSkipped = 0
+    foreach(sym dsn->symbols
+      when(sym->refdes
+        foreach(pin sym->pins
+          diagPinIdx = diagPinIdx + 1
+          diagOwner = sprintf(nil "PIN%06d" diagPinIdx)
+          diagNet = nil
+          when(pin->net diagNet = pin->net->name)
+          foreach(sub layers
+            diagLayer = strcat("ETCH/" sub)
+            foreach(diagKind '("ANTI" "THERMAL")
+              diagJson = pjt093PadDiagnostic(pin "pin" diagOwner diagNet diagLayer diagKind)
+              if(diagJson then
+                pjt08Comma(port diagIdx)
+                fprintf(port "%s" diagJson)
+                diagIdx = diagIdx + 1
+                if(diagKind == "ANTI" then diagAntiCount = diagAntiCount + 1 else diagThermalCount = diagThermalCount + 1)
+              else diagSkipped = diagSkipped + 1)
+            )
+          )
+        )
+      )
+    )
+    diagSeen = makeTable("pjt093DiagnosticSeen" nil)
+    foreach(net dsn->nets
+      diagNet = net->name
+      foreach(branch net->branches
+        foreach(viaObj branch->children
+          when(viaObj->objType == "via" && !diagSeen[viaObj]
+            diagSeen[viaObj] = t
+            diagViaIdx = diagViaIdx + 1
+            diagOwner = sprintf(nil "VIA%06d" diagViaIdx)
+            foreach(sub layers
+              diagLayer = strcat("ETCH/" sub)
+              foreach(diagKind '("ANTI" "THERMAL")
+                diagJson = pjt093PadDiagnostic(viaObj "via" diagOwner diagNet diagLayer diagKind)
+                if(diagJson then
+                  pjt08Comma(port diagIdx)
+                  fprintf(port "%s" diagJson)
+                  diagIdx = diagIdx + 1
+                  if(diagKind == "ANTI" then diagAntiCount = diagAntiCount + 1 else diagThermalCount = diagThermalCount + 1)
+                else diagSkipped = diagSkipped + 1)
+              )
             )
           )
         )
@@ -381,8 +457,10 @@ procedure(pcbExport()
         fprintf(log "SHAPE_COVERAGE layer=%s query_failed=true\n" shapeName)
       )
     )
+    fprintf(log "padstack_diagnostics=%d\npadstack_anti_valid=%d\npadstack_thermal_valid=%d\npadstack_diagnostic_null_or_invalid=%d\n" diagIdx diagAntiCount diagThermalCount diagSkipped)
     fprintf(log "drill_data_source=padstack_definition_unverified\n")
     fprintf(log "vias=%d\nvia_valid_pad_layer_records=%d\nvia_null_or_invalid_pad_layers=%d\nvia_duplicate_branch_references=%d\n" viaCount viaPadCount viaNullPadCount viaDupCount)
+    fprintf(log "BLOCKED: ANTI/THERMAL BBOX diagnostic only; no film polarity, clearance or thermal spoke synthesis.\n")
     fprintf(log "BLOCKED: net-associated shapes need count/geometry comparison to Allegro.\n")
     fprintf(log "BLOCKED: standalone copper, mask/paste NOT exported; drill definition collected unverified; via REGULAR geometry only as BBOX preview; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
     close(port) close(log)
