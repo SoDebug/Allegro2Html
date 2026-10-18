@@ -1,7 +1,869 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PcbToJson v0.9.3 — 真实文字与 PIN 编号预览</title><style>
-:root{font-family:system-ui,'Microsoft YaHei',sans-serif;color:#dbe9ed;background:#10191f}*{box-sizing:border-box}body{margin:0;display:grid;grid-template-columns:290px minmax(400px,1fr) 310px;height:100vh;overflow:hidden}aside{padding:15px;overflow:auto;background:#172229;border-right:1px solid #344650}aside:last-child{border-left:1px solid #344650;border-right:0}h2{font-size:17px;margin:4px 0 12px}h3{font-size:14px;margin:18px 0 8px}p,small{color:#b0c3ca;line-height:1.5}button,input,select{font:inherit;background:#253740;color:#f0f7f9;border:1px solid #51616b;border-radius:5px;padding:7px;max-width:100%}button{cursor:pointer}button:hover{background:#375361}input[type=checkbox]{accent-color:#67d0c7}input[type=file]{width:100%}#canvaswrap{position:relative;background:#071115;min-width:0}canvas{width:100%;height:100%;display:block;touch-action:none}#overlay{position:absolute;left:12px;bottom:12px;background:#16252acc;padding:8px 12px;border-radius:7px;font-size:12px;max-width:95%;pointer-events:none}label{display:flex;gap:9px;align-items:center;margin:5px 0;font-size:13px}.layer{display:flex;align-items:center;gap:8px;padding:4px;border-bottom:1px solid #293740}.layer span{flex:1;font-size:12px}.layer small{font-size:11px}#layers{max-height:43vh;overflow:auto}.btnrow{display:flex;flex-wrap:wrap;gap:7px}.netrow{display:block;padding:7px 5px;width:100%;text-align:left;font-size:12px;border:0;border-bottom:1px solid #32424b;border-radius:0}#netlist{max-height:35vh;overflow:auto}.active{color:#ffe88b;background:#3b4240}.warn{color:#ffd28b}#stats{white-space:pre-wrap;font-size:12px}#netinfo{font-size:12px;line-height:1.5}#search{width:100%}@media(max-width:1000px){body{grid-template-columns:220px minmax(340px,1fr) 240px}}@media(max-width:700px){body{height:auto;display:flex;flex-direction:column;overflow:auto}aside{max-height:330px}#canvaswrap{height:55vh}}
-</style></head><body>
-<aside><h2>PCB Film / 铜层</h2><input id="file" type="file" accept=".json,application/json"><p class="warn">直接加载 <b>pcb_core_v0_8.json</b>，无需合并或转换。原始 Film 层只显示已采集的数据。</p><div class="btnrow"><button id="all">全部铜层</button><button id="none">全部关闭</button><button id="top">仅 TOP</button><button id="bottom">仅 BOTTOM</button></div><div id="layers"></div><h3>图形类别</h3><label><input id="zones" type="checkbox" checked> 铺铜（含 Void）</label><label><input id="tracks" type="checkbox" checked> 走线</label><label><input id="pads" type="checkbox" checked> PIN 焊盘（有效 REGULAR，部分为边界框预览）</label><label><input id="vias" type="checkbox" checked> Via 焊盘（逐层 REGULAR 边界预览，非钻孔）</label><label><input id="drills" type="checkbox" checked> 钻孔轮廓预览（Padstack 定义，非制造级）</label><label><input id="diagAnti" type="checkbox"> ANTI 焊盘诊断轮廓（粉色虚线，非铜皮挖空）</label><label><input id="diagThermal" type="checkbox"> THERMAL 焊盘诊断轮廓（青色虚线，非热焊盘复现）</label><label><input id="board" type="checkbox" checked> PCB 板框</label><label><input id="partsTop" type="checkbox"> 顶面器件中心十字</label><label><input id="partsBottom" type="checkbox"> 底面器件中心十字</label><label><input id="silkTop" type="checkbox" checked> 顶面 Silkscreen</label><label><input id="silkBottom" type="checkbox"> 底面 Silkscreen</label><label><input id="assemblyTop" type="checkbox" checked> 顶面 Assembly</label><label><input id="assemblyBottom" type="checkbox"> 底面 Assembly</label><label><input id="placeTop" type="checkbox"> 顶面 Place Bound</label><label><input id="placeBottom" type="checkbox"> 底面 Place Bound</label><label><input id="textTop" type="checkbox" checked> 顶面真实丝印 REF DES 位号</label><label><input id="textBottom" type="checkbox"> 底面真实丝印 REF DES 位号</label><label><input id="auxText" type="checkbox"> 封装/Assembly/板级附加文字（默认关闭，可能密集重叠）</label><label><input id="pinNumbers" type="checkbox" checked> 根据物理 PIN 坐标显示 PIN 编号（非 Allegro 文字）</label><label><input id="refdes" type="checkbox"> 在中心十字旁标注位号（非丝印）</label><p class="warn">器件中心十字≠器件外形。外形由 Silkscreen / Assembly / Place Bound 控制；请关闭不用的一面。</p><p id="coverage" class="warn"></p></aside>
-<div id="canvaswrap"><canvas id="canvas"></canvas><div id="overlay">请加载 v0.8 JSON</div></div>
-<aside><h2>观察 / 网络过滤</h2><div class="btnrow"><button id="fit">适合窗口</button><button id="rotL">↶ 90°</button><button id="rotR">↷ 90°</button></div><label>旋转角度 <input id="angle" type="number" value="0" step="15" style="width:95px">°</label><label>视图 <select id="face"><option value="top">正面</option><option value="bottom">背面（镜像）</option></select></label><h3>PCB 鼠标选择类型</h3><label><input id="pickComponent" type="checkbox" checked> 允许选择器件</label><label><input id="pickNet" type="checkbox" checked> 允许选择网络</label><p id="pickHint">两项已开启：点击焊盘可同时选中器件和网络；点击铺铜可选中网络。</p><h3>网络</h3><input id="search" placeholder="搜索 GND、VCC…"><label>过滤模式 <select id="mode"><option value="all">全部</option><option value="highlight">高亮选中网络</option><option value="isolate">只显示选中网络</option></select></label><button id="clear">取消选中网络</button><div id="netinfo">未选择网络</div><div id="netlist"></div><h3>器件双向过滤</h3><input id="componentSearch" placeholder="搜索位号、Value、封装，例如 U35"><button id="clearComponent">取消选中器件</button><div id="componentInfo">未选择器件</div><div id="componentList" style="max-height:30vh;overflow:auto"></div><p>鼠标点击仅选择上面勾选的对象类型；筛选框输入、列表选择和显示开关不受影响。</p><h3>本文件统计</h3><pre id="stats"></pre><small>⚠️ 验证版：仅展示 v0.8 已导出的铜皮、走线和封装图形。PIN 预览已支持；v0.8.9 新增真实文字采集，需重新导出 JSON 并在 Allegro 实测；Via 已新增预览但未经 Allegro 实测；钻孔、阻焊、钢网尚未导出。圆弧方向已经纠正，但铜皮与 Void 的显示仍需与 Allegro 对照。</small></aside>
-<script src="viewer.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+ <head>
+  <meta charset="utf-8"/>
+  <meta content="width=device-width,initial-scale=1" name="viewport"/>
+  <title>
+   PcbToJson v0.9.4 — Offline Single-File Viewer
+  </title>
+  <style>
+   :root {
+  font-family:system-ui,'Microsoft YaHei',sans-serif;
+  color:#dbe9ed;
+  background:#10191f
+}
+
+* {
+  box-sizing:border-box
+}
+
+body {
+  margin:0;
+  display:grid;
+  grid-template-columns:290px minmax(400px,1fr) 310px;
+  height:100vh;
+  overflow:hidden
+}
+
+aside {
+  padding:15px;
+  overflow:auto;
+  background:#172229;
+  border-right:1px solid #344650
+}
+
+aside:last-child {
+  border-left:1px solid #344650;
+  border-right:0
+}
+
+h2 {
+  font-size:17px;
+  margin:4px 0 12px
+}
+
+h3 {
+  font-size:14px;
+  margin:18px 0 8px
+}
+
+p,small {
+  color:#b0c3ca;
+  line-height:1.5
+}
+
+button,input,select {
+  font:inherit;
+  background:#253740;
+  color:#f0f7f9;
+  border:1px solid #51616b;
+  border-radius:5px;
+  padding:7px;
+  max-width:100%
+}
+
+button {
+  cursor:pointer
+}
+
+button:hover {
+  background:#375361
+}
+
+input[type=checkbox] {
+  accent-color:#67d0c7
+}
+
+input[type=file] {
+  width:100%
+}
+
+#canvaswrap {
+  position:relative;
+  background:#071115;
+  min-width:0
+}
+
+canvas {
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none
+}
+
+#overlay {
+  position:absolute;
+  left:12px;
+  bottom:12px;
+  background:#16252acc;
+  padding:8px 12px;
+  border-radius:7px;
+  font-size:12px;
+  max-width:95%;
+  pointer-events:none
+}
+
+label {
+  display:flex;
+  gap:9px;
+  align-items:center;
+  margin:5px 0;
+  font-size:13px
+}
+
+.layer {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:4px;
+  border-bottom:1px solid #293740
+}
+
+.layer span {
+  flex:1;
+  font-size:12px
+}
+
+.layer small {
+  font-size:11px
+}
+
+#layers {
+  max-height:43vh;
+  overflow:auto
+}
+
+.btnrow {
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px
+}
+
+.netrow {
+  display:block;
+  padding:7px 5px;
+  width:100%;
+  text-align:left;
+  font-size:12px;
+  border:0;
+  border-bottom:1px solid #32424b;
+  border-radius:0
+}
+
+#netlist {
+  max-height:35vh;
+  overflow:auto
+}
+
+.active {
+  color:#ffe88b;
+  background:#3b4240
+}
+
+.warn {
+  color:#ffd28b
+}
+
+#stats {
+  white-space:pre-wrap;
+  font-size:12px
+}
+
+#netinfo {
+  font-size:12px;
+  line-height:1.5
+}
+
+#search {
+  width:100%
+}
+
+@media(max-width:1000px) {
+  body {
+  grid-template-columns:220px minmax(340px,1fr) 240px
+}
+
+}
+
+@media(max-width:700px) {
+  body {
+  height:auto;
+  display:flex;
+  flex-direction:column;
+  overflow:auto
+}
+
+aside {
+  max-height:330px
+}
+
+#canvaswrap {
+  height:55vh
+}
+
+}
+  </style>
+ </head>
+ <body>
+  <aside>
+   <h2>
+    PCB Film / 铜层
+   </h2>
+   <input accept=".json,application/json" id="file" type="file"/>
+   <p class="warn">
+    直接加载
+    <b>
+     pcb_core_v0_8.json
+    </b>
+    ，无需合并或转换。原始 Film 层只显示已采集的数据。
+   </p>
+   <div class="btnrow">
+    <button id="all">
+     全部铜层
+    </button>
+    <button id="none">
+     全部关闭
+    </button>
+    <button id="top">
+     仅 TOP
+    </button>
+    <button id="bottom">
+     仅 BOTTOM
+    </button>
+   </div>
+   <div id="layers">
+   </div>
+   <h3>
+    图形类别
+   </h3>
+   <label>
+    <input checked="" id="zones" type="checkbox"/>
+    铺铜（含 Void）
+   </label>
+   <label>
+    <input checked="" id="tracks" type="checkbox"/>
+    走线
+   </label>
+   <label>
+    <input checked="" id="pads" type="checkbox"/>
+    PIN 焊盘（有效 REGULAR，部分为边界框预览）
+   </label>
+   <label>
+    <input checked="" id="vias" type="checkbox"/>
+    Via 焊盘（逐层 REGULAR 边界预览，非钻孔）
+   </label>
+   <label>
+    <input checked="" id="drills" type="checkbox"/>
+    钻孔轮廓预览（Padstack 定义，非制造级）
+   </label>
+   <label>
+    <input id="diagAnti" type="checkbox"/>
+    ANTI 焊盘诊断轮廓（粉色虚线，非铜皮挖空）
+   </label>
+   <label>
+    <input id="diagThermal" type="checkbox"/>
+    THERMAL 焊盘诊断轮廓（青色虚线，非热焊盘复现）
+   </label>
+   <label>
+    <input checked="" id="board" type="checkbox"/>
+    PCB 板框
+   </label>
+   <label>
+    <input id="partsTop" type="checkbox"/>
+    顶面器件中心十字
+   </label>
+   <label>
+    <input id="partsBottom" type="checkbox"/>
+    底面器件中心十字
+   </label>
+   <label>
+    <input checked="" id="silkTop" type="checkbox"/>
+    顶面 Silkscreen
+   </label>
+   <label>
+    <input id="silkBottom" type="checkbox"/>
+    底面 Silkscreen
+   </label>
+   <label>
+    <input checked="" id="assemblyTop" type="checkbox"/>
+    顶面 Assembly
+   </label>
+   <label>
+    <input id="assemblyBottom" type="checkbox"/>
+    底面 Assembly
+   </label>
+   <label>
+    <input id="placeTop" type="checkbox"/>
+    顶面 Place Bound
+   </label>
+   <label>
+    <input id="placeBottom" type="checkbox"/>
+    底面 Place Bound
+   </label>
+   <label>
+    <input checked="" id="textTop" type="checkbox"/>
+    顶面真实丝印 REF DES 位号
+   </label>
+   <label>
+    <input id="textBottom" type="checkbox"/>
+    底面真实丝印 REF DES 位号
+   </label>
+   <label>
+    <input id="auxText" type="checkbox"/>
+    封装/Assembly/板级附加文字（默认关闭，可能密集重叠）
+   </label>
+   <label>
+    <input checked="" id="pinNumbers" type="checkbox"/>
+    根据物理 PIN 坐标显示 PIN 编号（非 Allegro 文字）
+   </label>
+   <label>
+    <input id="refdes" type="checkbox"/>
+    在中心十字旁标注位号（非丝印）
+   </label>
+   <p class="warn">
+    器件中心十字≠器件外形。外形由 Silkscreen / Assembly / Place Bound 控制；请关闭不用的一面。
+   </p>
+   <p class="warn" id="coverage">
+   </p>
+  </aside>
+  <div id="canvaswrap">
+   <canvas id="canvas">
+   </canvas>
+   <div id="overlay">
+    请加载 v0.8 JSON
+   </div>
+  </div>
+  <aside>
+   <h2>
+    观察 / 网络过滤
+   </h2>
+   <div class="btnrow">
+    <button id="fit">
+     适合窗口
+    </button>
+    <button id="rotL">
+     ↶ 90°
+    </button>
+    <button id="rotR">
+     ↷ 90°
+    </button>
+   </div>
+   <label>
+    旋转角度
+    <input id="angle" step="15" style="width:95px" type="number" value="0"/>
+    °
+   </label>
+   <label>
+    视图
+    <select id="face">
+     <option value="top">
+      正面
+     </option>
+     <option value="bottom">
+      背面（镜像）
+     </option>
+    </select>
+   </label>
+   <h3>
+    PCB 鼠标选择类型
+   </h3>
+   <label>
+    <input checked="" id="pickComponent" type="checkbox"/>
+    允许选择器件
+   </label>
+   <label>
+    <input checked="" id="pickNet" type="checkbox"/>
+    允许选择网络
+   </label>
+   <p id="pickHint">
+    两项已开启：点击焊盘可同时选中器件和网络；点击铺铜可选中网络。
+   </p>
+   <h3>
+    网络
+   </h3>
+   <input id="search" placeholder="搜索 GND、VCC…"/>
+   <label>
+    过滤模式
+    <select id="mode">
+     <option value="all">
+      全部
+     </option>
+     <option value="highlight">
+      高亮选中网络
+     </option>
+     <option value="isolate">
+      只显示选中网络
+     </option>
+    </select>
+   </label>
+   <button id="clear">
+    取消选中网络
+   </button>
+   <div id="netinfo">
+    未选择网络
+   </div>
+   <div id="netlist">
+   </div>
+   <h3>
+    器件双向过滤
+   </h3>
+   <input id="componentSearch" placeholder="搜索位号、Value、封装，例如 U35"/>
+   <button id="clearComponent">
+    取消选中器件
+   </button>
+   <div id="componentInfo">
+    未选择器件
+   </div>
+   <div id="componentList" style="max-height:30vh;overflow:auto">
+   </div>
+   <p>
+    鼠标点击仅选择上面勾选的对象类型；筛选框输入、列表选择和显示开关不受影响。
+   </p>
+   <h3>
+    本文件统计
+   </h3>
+   <pre id="stats"></pre>
+   <small>
+    ⚠️ 验证版：仅展示 v0.8 已导出的铜皮、走线和封装图形。PIN 预览已支持；v0.8.9 新增真实文字采集，需重新导出 JSON 并在 Allegro 实测；Via 已新增预览但未经 Allegro 实测；钻孔、阻焊、钢网尚未导出。圆弧方向已经纠正，但铜皮与 Void 的显示仍需与 Allegro 对照。
+   </small>
+  </aside>
+  <script>
+   /*
+ * PcbToJson Viewer — offline single-file edition.
+ * Source: v0.9.3 viewer.js (functionality preserved).
+ * Data is loaded using the local file input, not a network request.
+ */
+
+'use strict';
+// v0.8.4: connected-track stroking, explicit graphic visibility and accurate position markers.
+const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d',{alpha:false});
+const colors=['#e9a659','#6dc9b3','#86aeff','#c29cf0','#73dca8','#9fafec','#e4c17a','#77c9df','#e69aae','#d4a3df','#c3d994','#9dd2e4','#c2aaee','#e89ab2','#85d3a1','#eac77a','#a6bbe0','#f09f80'];
+let db=null,active=new Set(),net=null,theta=0,mirror=false,scale=1,center=[0,0],pan=[0,0],drag=null;
+let byLayer=new Map(),zoneCache=new WeakMap(),zoneBoundsCache=new WeakMap(),nets=[],componentMap=new Map(),packageByRef=new Map(),selectedComponent=null,selectedPin=null,validPads=0,invalidPads=0,validViaPads=0,emptyVias=0;const EPS=1e-7;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const validPad=p=>Array.isArray(p.position)&&Array.isArray(p.size)&&Number(p.size[0])>0&&Number(p.size[1])>0&&p.shape!=='NULL';
+function current(){return {x:canvas.width/2+pan[0],y:canvas.height/2+pan[1]}};
+function color(layer){const i=db.layers.findIndex(l=>l.allegro_layer===layer);return colors[(i<0?0:i)%colors.length]}
+function norm(a){return ((a%(Math.PI*2))+Math.PI*2)%(Math.PI*2)}
+function addArc(p,s){const a=s.endpoints?.[0],b=s.endpoints?.[1],c=s.center,r=s.radius;if(!a||!b||!c||!(r>0))return false;
+  const aa=Math.atan2(a[1]-c[1],a[0]-c[0]);const bb=Math.atan2(b[1]-c[1],b[0]-c[0]);
+  const closed=Math.hypot(a[0]-b[0],a[1]-b[1])<EPS;
+  // Canvas paths defined in world coordinates (Y upwards before canvas transform).
+  // Allegro clockwise=true means decreasing mathematical angle.
+  // Canvas Path2D is constructed in world coordinates BEFORE applying Y flip;
+  // anticlockwise=true is required for decreasing angles. Do not invert it.
+  if(closed){p.arc(c[0],c[1],r,aa,aa+(s.clockwise?-Math.PI*2:Math.PI*2),Boolean(s.clockwise))}
+  else p.arc(c[0],c[1],r,aa,bb,Boolean(s.clockwise));
+  return true;
+}
+function ring(p,segments){if(!segments?.length)return;let started=false;
+  for(const s of segments){const e=s.endpoints;if(!e||!e[0]||!e[1])continue;
+    if(!started){p.moveTo(e[0][0],e[0][1]);started=true}
+    if(s.type==='arc'&&s.center&&s.radius>0){addArc(p,s)}else p.lineTo(e[1][0],e[1][1]);
+  }if(started)p.closePath();
+}
+function zonePath(z){let p=zoneCache.get(z);if(p)return p;p=new Path2D();ring(p,z.rings);for(const v of z.voids||[])ring(p,v);zoneCache.set(z,p);return p}
+// Conservative spatial prefilter for hit-testing large poured-copper polygons.
+// Arc extents may be overestimated but never clipped by their radius box.
+function zoneBounds(z){
+  let b=zoneBoundsCache.get(z);if(b)return b;
+  let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+  for(const s of z.rings||[]){
+    for(const pt of s.endpoints||[]){if(!pt)continue;x0=Math.min(x0,pt[0]);y0=Math.min(y0,pt[1]);x1=Math.max(x1,pt[0]);y1=Math.max(y1,pt[1])}
+    if(s.type==='arc'&&s.center&&Number(s.radius)>0){const c=s.center,r=Number(s.radius);x0=Math.min(x0,c[0]-r);y0=Math.min(y0,c[1]-r);x1=Math.max(x1,c[0]+r);y1=Math.max(y1,c[1]+r)}
+  }
+  b=[x0,y0,x1,y1];zoneBoundsCache.set(z,b);return b;
+}
+function pickZoneAt(x,y){
+  if(!$('zones').checked)return null;
+  // Hit test the actual filled path, including circular and polygonal voids.
+  // Canvas uses screen-space coordinates for isPointInPath, so apply the same
+  // world-to-screen matrix used by paint() before testing.
+  const screenX=canvas.width/2+pan[0],screenY=canvas.height/2+pan[1];
+  ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.translate(screenX,screenY);
+  ctx.rotate(theta);ctx.scale(scale*(mirror?-1:1),-scale);ctx.translate(-center[0],-center[1]);
+  const sx=screenX+Math.cos(theta)*scale*(mirror?-1:1)*(x-center[0])+Math.sin(theta)*scale*(y-center[1]);
+  const sy=screenY+Math.sin(theta)*scale*(mirror?-1:1)*(x-center[0])-Math.cos(theta)*scale*(y-center[1]);
+  let found=null;
+  const visible=db.layers.map(l=>l.allegro_layer).filter(l=>active.has(l));
+  outer:for(let li=visible.length-1;li>=0;li--){
+    const zs=byLayer.get(visible[li])?.zones||[];
+    for(let zi=zs.length-1;zi>=0;zi--){const z=zs[zi];if(!z.net)continue;
+      if(net&&$('mode').value==='isolate'&&z.net!==net)continue;
+      const b=zoneBounds(z);if(x<b[0]||x>b[2]||y<b[1]||y>b[3])continue;
+      if(ctx.isPointInPath(zonePath(z),sx,sy,'evenodd')){found=z;break outer}
+    }
+  }
+  ctx.restore();return found;
+}
+function appendSegmentToContext(s){
+  const e=s.endpoints;if(!e?.[0]||!e?.[1])return;
+  if(s.type==='arc'&&s.center&&s.radius>0){
+    const a=e[0],b=e[1],c=s.center,r=s.radius;
+    const aa=Math.atan2(a[1]-c[1],a[0]-c[0]);
+    const bb=Math.atan2(b[1]-c[1],b[0]-c[0]);
+    const full=Math.hypot(a[0]-b[0],a[1]-b[1])<EPS;
+    ctx.arc(c[0],c[1],r,aa,full?aa+(s.clockwise?-2*Math.PI:2*Math.PI):bb,Boolean(s.clockwise));
+  }else ctx.lineTo(...e[1]);
+}
+function renderTracks(a,layer,useNet,mode){
+  // One stroke per connected run, not one per Allegro segment. Preserve actual track widths.
+  ctx.lineCap='round';ctx.lineJoin='round';
+  let open=false,last=null,style='',prevWidth=0,shown=0;
+  const flush=()=>{if(open){ctx.stroke();open=false}};
+  for(const t of a){
+    if(useNet&&mode==='isolate'&&t.net!==net)continue;
+    const e=t.endpoints;if(!e?.[0]||!e?.[1])continue;
+    const selected=useNet&&t.net===net;
+    const width=Number(t.width)>0?Number(t.width):1;
+    const curStyle=(selected?'#ffef81':color(layer))+'|'+(useNet&&!selected?'fade':'solid')+'|'+width+'|'+String(t.net);
+    const linked=open&&curStyle===style&&last&&Math.hypot(last[0]-e[0][0],last[1]-e[0][1])<.035;
+    if(!linked){flush();ctx.beginPath();ctx.moveTo(...e[0]);ctx.strokeStyle=selected?'#ffef81':color(layer);ctx.globalAlpha=useNet&&!selected?.08:1;ctx.lineWidth=width;style=curStyle;open=true}
+    appendSegmentToContext(t);last=e[1];shown++;
+  }
+  flush();ctx.globalAlpha=1;return shown;
+}
+function drawSegment(s){let e=s.endpoints;if(!e?.[0]||!e?.[1])return;ctx.beginPath();ctx.moveTo(...e[0]);if(s.type==='arc'&&s.center&&s.radius>0){let p=new Path2D();p.moveTo(...e[0]);addArc(p,s);ctx.stroke(p)}else{ctx.lineTo(...e[1]);ctx.stroke()}}
+function renderPads(layer,useNet,mode){
+  if(!$('pads').checked)return 0;
+  let n=0;
+  for(const p of byLayer.get(layer)?.pads||[]){
+    if(useNet&&mode==='isolate'&&p.net!==net)continue;
+    const size=p.size,pos=p.position;
+    if(!Array.isArray(size)||!Array.isArray(pos)||!(size[0]>0&&size[1]>0))continue;
+    const highlight=useNet&&p.net===net;
+    ctx.save();ctx.translate(pos[0],pos[1]);ctx.rotate((Number(p.rotation)||0)*Math.PI/180);
+    ctx.fillStyle=highlight?'#ffef81':color(layer);
+    ctx.globalAlpha=useNet&&!highlight?.08:.92;
+    const shape=String(p.shape||'').toUpperCase();
+    if(shape.includes('CIRCLE')||shape.includes('ROUND')&&!shape.includes('RECT')){
+      ctx.beginPath();ctx.ellipse(0,0,size[0]/2,size[1]/2,0,0,2*Math.PI);ctx.fill();
+    }else if(shape.startsWith('OBLONG')){
+      const w=size[0],h=size[1],r=Math.min(w,h)/2;ctx.beginPath();ctx.roundRect(-w/2,-h/2,w,h,r);ctx.fill();
+    }else{
+      ctx.fillRect(-size[0]/2,-size[1]/2,size[0],size[1]);
+    }
+    ctx.restore();n++;
+  }
+  return n;
+}
+// Via graphics are separate from component PIN pads. Each via carries its own
+// per-layer REGULAR pad previews; never guess drill diameter or unlisted layers.
+function renderVias(layer,useNet,mode){
+  if(!$('vias').checked)return 0;
+  let count=0;
+  for(const v of byLayer.get(layer)?.vias||[]){
+    if(useNet&&mode==='isolate'&&v.net!==net)continue;
+    const g=v.pad,sz=g.size,pos=v.position;
+    if(!Array.isArray(pos)||!Array.isArray(sz)||!(sz[0]>0&&sz[1]>0))continue;
+    const highlighted=useNet&&v.net===net;
+    ctx.save();ctx.translate(pos[0],pos[1]);ctx.rotate((Number(v.rotation)||0)*Math.PI/180);
+    ctx.globalAlpha=useNet&&!highlighted?.08:.95;ctx.fillStyle=highlighted?'#ffef81':'#e9d3a0';
+    const shape=String(g.shape||'').toUpperCase();
+    if(shape.includes('CIRCLE')||shape.includes('ROUND')&&!shape.includes('RECT')){
+      ctx.beginPath();ctx.ellipse(0,0,sz[0]/2,sz[1]/2,0,0,2*Math.PI);ctx.fill();
+    }else if(shape.includes('OBLONG')){
+      ctx.beginPath();ctx.roundRect(-sz[0]/2,-sz[1]/2,sz[0],sz[1],Math.min(...sz)/2);ctx.fill();
+    }else ctx.fillRect(-sz[0]/2,-sz[1]/2,sz[0],sz[1]);
+    ctx.restore();count++;
+  }
+  return count;
+}
+// Render physical holes separately from REGULAR copper pads. The drill
+// definition is not a copper layer, but its preview is shown only when one
+// of its regular-pad layers is visible. Unsupported/zero geometry is skipped.
+function renderDrills(){
+  if(!$('drills').checked)return 0;
+  let n=0;
+  const hole=(position,drill,rotation)=>{
+    if(!Array.isArray(position)||!drill)return;
+    const [w,h]=drill.size||[];
+    const dia=Number(drill.diameter);
+    const width=Number(w)>0?Number(w):(dia>0?dia:0);
+    const height=Number(h)>0?Number(h):(dia>0?dia:0);
+    if(!(width>0&&height>0))return;
+    const offset=Array.isArray(drill.offset)?drill.offset:[0,0];
+    ctx.save();ctx.translate(position[0],position[1]);ctx.rotate((Number(rotation)||0)*Math.PI/180);
+    ctx.translate(Number(offset[0])||0,Number(offset[1])||0);
+    ctx.fillStyle='#081217';ctx.globalAlpha=1;ctx.beginPath();
+    if(Math.abs(width-height)<1e-6)ctx.arc(0,0,width/2,0,2*Math.PI);
+    else ctx.roundRect(-width/2,-height/2,width,height,Math.min(width,height)/2);
+    ctx.fill();ctx.strokeStyle='#f3e5a2';ctx.lineWidth=Math.max(.6/scale,.45);ctx.stroke();ctx.restore();n++;
+  };
+  // A physical via is rendered once even when 18 layers are visible.
+  for(const v of db.vias||[]){
+    if(net&&$('mode').value==='isolate'&&v.net!==net)continue;
+    if(!(v.pads||[]).some(p=>active.has(p.layer)))continue;
+    hole(v.position,v.drill,v.rotation);
+  }
+  const activePins=new Set();
+  for(const layer of active)for(const p of byLayer.get(layer)?.pads||[])activePins.add(p.pin_id);
+  for(const p of db.pins||[]){
+    if(!p.through||!activePins.has(p.id))continue;
+    if(net&&$('mode').value==='isolate'&&p.net!==net)continue;
+    hole(p.position,p.drill,p.rotation);
+  }
+  return n;
+}
+
+// Text is rendered independently from footprint geometry. Design-level duplicates
+// matching symbol-child glyph records are de-duplicated for display only.
+// Authentic REF DES labels are separate from footprint auxiliary markings.
+function drawRealTexts(){
+  if(!db?.text_graphics?.length)return 0;
+  let count=0,seen=new Set();
+  const aux=$('auxText').checked;
+  for(const t of db.text_graphics){
+    const l=String(t.layer||''),up=l.toUpperCase(),isTop=up.endsWith('_TOP'),isBot=up.endsWith('_BOTTOM');
+    if(!isTop&&!isBot)continue;
+    const sideOn=(isTop&&$('textTop').checked)||(isBot&&$('textBottom').checked);
+    const auxOn=(isTop&&$('silkTop').checked)||(isBot&&$('silkBottom').checked)||
+                (isTop&&$('assemblyTop').checked)||(isBot&&$('assemblyBottom').checked);
+    const isRefdes=up==='REF DES/SILKSCREEN_TOP'||up==='REF DES/SILKSCREEN_BOTTOM';
+    const isExtra=up.startsWith('PACKAGE GEOMETRY/')||up.startsWith('BOARD GEOMETRY/')||
+                  up.startsWith('REF DES/ASSEMBLY_')||up.startsWith('PIN NUMBER/');
+    if(!(isRefdes&&sideOn || aux&&isExtra&&auxOn))continue;
+    if(!Array.isArray(t.position)||!t.text)continue;
+    const k=[l,t.refdes,t.text,t.position.join(','),t.rotation,t.mirrored,t.text_block,t.height,t.width,t.stroke_width].join('|');
+    if(seen.has(k))continue;seen.add(k);
+    const [x,y]=t.position;
+    const h=Number(t.height)>0?Number(t.height):12;
+    ctx.save();ctx.translate(x,y);
+    ctx.rotate((Number(t.rotation)||0)*Math.PI/180);
+    // The board view mirrors its X axis on the bottom side. Undo that for
+    // glyphs so that text is readable, without moving the label anchor.
+    ctx.scale((mirror?-1:1)*(t.mirrored?-1:1),-1);
+    ctx.font=`${h}px sans-serif`;
+    ctx.textBaseline='alphabetic';
+    const align=String(t.justify||'').toUpperCase();
+    ctx.textAlign=align==='RIGHT'?'right':align==='CENTER'?'center':'left';
+    ctx.fillStyle=up.includes('SILKSCREEN')?'#a8eabb':'#f4d6a0';
+    ctx.globalAlpha=1;ctx.fillText(String(t.text),0,0);
+    ctx.restore();count++;
+  }
+  return count;
+}
+function drawPinNumbers(){
+  if(!$('pinNumbers').checked||!db?.pins?.length)return 0;
+  // Screen-space label sizes, not physical silkscreen. Only draw when legible.
+  const selected=selectedComponent;
+  const threshold=selected?0.32:0.78;
+  if(scale<threshold)return 0;
+  const top=active.has('ETCH/TOP'),bottom=active.has('ETCH/BOTTOM');
+  const W=canvas.width,H=canvas.height,cs=Math.cos(theta),sn=Math.sin(theta);
+  const o=current(),factor=scale*(mirror?-1:1);
+  let count=0;
+  ctx.save();ctx.fillStyle='#ffe1a8';ctx.globalAlpha=.95;
+  for(const p of db.pins){
+    if(!p.position||p.number===null||p.number===undefined||String(p.number).trim()==='')continue;
+    if(selected&&p.refdes!==selected)continue;
+    const c=componentMap.get(p.refdes),side=c?.side||'top';
+    if(!(p.through&&(top||bottom)||(side==='top'&&top)||(side==='bottom'&&bottom)))continue;
+    const [x,y]=p.position;
+    if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+    const dx=x-center[0],dy=y-center[1];
+    const sx=o.x+cs*factor*dx+sn*scale*dy;
+    const sy=o.y+sn*factor*dx-cs*scale*dy;
+    if(sx<4||sy<4||sx>W-4||sy>H-4)continue;
+    ctx.save();ctx.translate(x,y);
+    ctx.scale(mirror?-1:1,-1);
+    ctx.font=`${Math.min(17,Math.max(7,10/scale))}px sans-serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(String(p.number),0,-Math.min(8,6/scale));
+    ctx.restore();count++;
+  }
+  ctx.restore();return count;
+}
+function drawPadstackDiagnostics(){
+  if(!$('diagAnti').checked&&!$('diagThermal').checked)return 0;
+  const selected=new Set(db.layers.filter(l=>active.has(l.allegro_layer)).map(l=>l.allegro_layer));
+  let count=0;ctx.save();ctx.lineWidth=1.3/scale;ctx.setLineDash([4/scale,3/scale]);
+  for(const p of db.padstack_diagnostics||[]){
+    if(!selected.has(p.layer)||!validPad(p))continue;
+    if(p.kind==='ANTI'&&!$('diagAnti').checked||p.kind==='THERMAL'&&!$('diagThermal').checked)continue;
+    if(net&&$('mode').value==='isolate'&&p.net!==net)continue;
+    const [x,y]=p.position,[w,h]=p.size;
+    const chosen=net&&p.net===net;ctx.globalAlpha=net&&!chosen?.18:.85;
+    ctx.strokeStyle=p.kind==='ANTI'?'#ff6d9d':'#43e7ef';
+    ctx.save();ctx.translate(x,y);ctx.rotate((Number(p.rotation)||0)*Math.PI/180);
+    ctx.beginPath();
+    if(String(p.shape).toUpperCase().includes('CIRCLE'))ctx.ellipse(0,0,w/2,h/2,0,0,Math.PI*2);
+    else ctx.rect(-w/2,-h/2,w,h);
+    ctx.stroke();ctx.restore();count++;
+  }
+  ctx.restore();return count;
+}
+function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081217';ctx.fillRect(0,0,canvas.width,canvas.height);
+  const origin=current();ctx.translate(origin.x,origin.y);ctx.rotate(theta);ctx.scale(scale*(mirror?-1:1),-scale);ctx.translate(-center[0],-center[1]);
+  const mode=$('mode').value,useNet=net!==null&&mode!=='all';let nzone=0,ntrack=0,npad=0,nvia=0;
+  const layers=db.layers.map(l=>l.allegro_layer).filter(l=>active.has(l));
+  if($('zones').checked){for(const layer of layers){let a=byLayer.get(layer)?.zones||[];
+    for(const z of a){if(useNet&&mode==='isolate'&&z.net!==net)continue;
+      const chosen=useNet&&z.net===net;
+      ctx.fillStyle=chosen?'#ffde62':color(layer);ctx.globalAlpha=useNet&&!chosen?.075:.70;
+      // Evenodd is essential: all 94k circular clearances remain empty.
+      ctx.fill(zonePath(z),'evenodd');nzone++;
+    }
+  }}ctx.globalAlpha=1;
+  if($('tracks').checked){for(const layer of layers){ntrack+=renderTracks(byLayer.get(layer)?.tracks||[],layer,useNet,mode)}}ctx.globalAlpha=1;
+  for(const layer of layers)npad+=renderPads(layer,useNet,mode);ctx.globalAlpha=1;
+  for(const layer of layers)nvia+=renderVias(layer,useNet,mode);ctx.globalAlpha=1;
+  const ndrill=renderDrills();ctx.globalAlpha=1;
+  const ndiag=drawPadstackDiagnostics();ctx.globalAlpha=1;
+  ctx.lineCap='round';ctx.lineJoin='round';
+  if($('board').checked){ctx.strokeStyle='#f1f5f4';ctx.lineWidth=1.3/scale;for(const seg of db.board?.outline||[])drawSegment(seg)}
+  if($('silkTop').checked||$('silkBottom').checked||$('assemblyTop').checked||$('assemblyBottom').checked||$('placeTop').checked||$('placeBottom').checked){ctx.lineWidth=0.9/scale;for(const item of db.package_graphics||[]){const l=item.layer||'';
+    const side=l.endsWith('_TOP')?'Top':l.endsWith('_BOTTOM')?'Bottom':null;
+    const kind=l.includes('/SILKSCREEN_')?'silk':l.includes('/ASSEMBLY_')?'assembly':l.includes('/PLACE_BOUND_')?'place':null;
+    const control=kind&&side?$(kind+side):null;if(!control?.checked)continue;
+    ctx.strokeStyle=kind==='silk'?(side==='Top'?'#92e1b2':'#f0ba86'):kind==='assembly'?'#8ba8d9':'#7f8188';
+    ctx.lineWidth=Math.max(.9/scale,Number(item.geometry?.width)||0);ctx.setLineDash(kind==='place'?[5/scale,3/scale]:[]);drawSegment(item.geometry)}ctx.setLineDash([])}
+  for(const c of db.components||[]){if(!(c.side==='top'&&$('partsTop').checked||c.side==='bottom'&&$('partsBottom').checked))continue;if(!c.position)continue;const [x,y]=c.position;const rr=4/scale;ctx.strokeStyle=c.side==='top'?'#63ffc8':'#ffa568';ctx.lineWidth=1.2/scale;ctx.beginPath();ctx.moveTo(x-rr,y);ctx.lineTo(x+rr,y);ctx.moveTo(x,y-rr);ctx.lineTo(x,y+rr);ctx.stroke();if($('refdes').checked&&scale>0.16){ctx.save();ctx.translate(x,y);ctx.scale(1,-1);ctx.font=`${12/scale}px sans-serif`;ctx.fillStyle=ctx.strokeStyle;ctx.fillText(c.refdes||'',6/scale,0);ctx.restore()}}
+  const ntext=drawRealTexts(),npinnum=drawPinNumbers();
+  drawSelection();
+  ctx.setTransform(1,0,0,1,0,0);$('overlay').textContent=`可见铜层 ${layers.length}/18 · 已绘制铺铜 ${nzone} · 走线 ${ntrack} · 焊盘图形 ${npad} · Via焊盘 ${nvia} · 钻孔预览 ${ndrill} · Padstack诊断 ${ndiag} · 文字 ${ntext} · PIN号 ${npinnum} · 网络 ${net||'全部'} · 缩放 ${scale.toFixed(2)} px/mil`;
+}
+
+function worldAt(e){const rect=canvas.getBoundingClientRect(),u=e.clientX-rect.left-canvas.width/2-pan[0],v=e.clientY-rect.top-canvas.height/2-pan[1];const cs=Math.cos(theta),sn=Math.sin(theta);const xx=cs*u+sn*v,yy=-sn*u+cs*v;return [center[0]+xx/(scale*(mirror?-1:1)),center[1]-yy/scale]}
+function pointSegmentDistance(x,y,a,b){const dx=b[0]-a[0],dy=b[1]-a[1],l=dx*dx+dy*dy;if(l<1e-12)return Math.hypot(x-a[0],y-a[1]);const t=Math.max(0,Math.min(1,((x-a[0])*dx+(y-a[1])*dy)/l));return Math.hypot(x-a[0]-t*dx,y-a[1]-t*dy)}
+function pickAt(e){
+  const allowComponent=$('pickComponent').checked,allowNet=$('pickNet').checked;
+  if(!allowComponent&&!allowNet)return;
+  const [x,y]=worldAt(e),tol=Math.max(2,10/scale);let pick=null,best=tol;
+  // Pads can represent a component, a network, or both. NULL pads are excluded at data import.
+  for(const layer of active){for(const p of byLayer.get(layer)?.pads||[]){
+    if(allowNet&&!allowComponent&&!p.net)continue;
+    if(allowComponent&&!allowNet&&!p.refdes)continue;
+    const dx=x-p.position[0],dy=y-p.position[1],sz=p.size;
+    if(Math.abs(dx)>sz[0]/2+tol||Math.abs(dy)>sz[1]/2+tol)continue;
+    const distance=Math.max(0,Math.hypot(dx,dy)-Math.max(sz[0],sz[1])/2);
+    if(distance<best){best=distance;pick={type:'pad',obj:p}}
+  }}
+  if(!pick&&allowNet&&$('vias').checked){for(const layer of active){for(const v of byLayer.get(layer)?.vias||[]){
+    if(!v.net||!Array.isArray(v.position))continue;
+    const r=Math.max(v.pad.size[0],v.pad.size[1])/2;
+    const d=Math.hypot(x-v.position[0],y-v.position[1]);
+    if(d<=r+tol&&Math.max(0,d-r)<best){best=Math.max(0,d-r);pick={type:'via',obj:v}}
+  }}}
+  if(!pick&&allowComponent){for(const c of db.components||[]){if(!c.position)continue;
+    const dist=Math.hypot(x-c.position[0],y-c.position[1]);
+    if(dist<best){best=dist;pick={type:'component',obj:c}}
+  }}
+  if(!pick&&allowNet){best=tol;for(const layer of active){for(const t of byLayer.get(layer)?.tracks||[]){
+    if(!t.net)continue;
+    const a=t.endpoints?.[0],b=t.endpoints?.[1];if(!a||!b)continue;
+    const pad=best+(t.width||0)/2;
+    if(x<Math.min(a[0],b[0])-pad||x>Math.max(a[0],b[0])+pad||y<Math.min(a[1],b[1])-pad||y>Math.max(a[1],b[1])+pad)continue;
+    const dist=pointSegmentDistance(x,y,a,b)-Math.max(0,Number(t.width)||0)/2;
+    if(dist<best){best=dist;pick={type:'track',obj:t}}
+  }}}
+  // Copper fill is rendered beneath tracks and pads. If neither is hit,
+  // select the polygon's net; never choose a clearance/void as copper.
+  if(!pick&&allowNet){const z=pickZoneAt(x,y);if(z)pick={type:'zone',obj:z}}
+  if(!pick)return;
+  let changedComponent=false,changedNet=false;
+  if(pick.type==='pad'){
+    if(allowComponent&&pick.obj.refdes){selectedPin=pick.obj.pin_id;selectedComponent=pick.obj.refdes;changedComponent=true}
+    if(allowNet&&pick.obj.net){net=pick.obj.net;changedNet=true}
+  }else if(pick.type==='component'){
+    if(allowComponent){selectedComponent=pick.obj.refdes;selectedPin=null;changedComponent=true}
+  }else if(allowNet&&pick.obj.net){net=pick.obj.net;changedNet=true}
+  if(changedComponent){$('componentSearch').value=selectedComponent||'';searchComponents()}
+  if(changedNet){$('search').value=net;$('mode').value='highlight';searchNets()}
+  if(changedComponent||changedNet)paint();
+}
+function updatePickHint(){
+  const c=$('pickComponent').checked,n=$('pickNet').checked;
+  $('pickHint').textContent=c&&n?'两项已开启：点击焊盘可同时选中器件和网络；点击铺铜选中网络。':
+    c?'仅选择器件：点击焊盘或器件中心，不更改网络选择。':
+    n?'仅选择网络：点击焊盘、Via、走线或铺铜，不更改器件选择。':
+    '两项均关闭：点击 PCB 不会更改任何选择。';
+}
+$('pickComponent').onchange=updatePickHint;
+$('pickNet').onchange=updatePickHint;
+updatePickHint();
+function drawSelection(){if(!selectedComponent)return;const c=componentMap.get(selectedComponent);if(!c?.position)return;const [x,y]=c.position;
+  const segs=packageByRef.get(selectedComponent)||[];let loX=Infinity,loY=Infinity,hiX=-Infinity,hiY=-Infinity;
+  for(const g of segs){if(!g.layer?.includes('PLACE_BOUND')&&!g.layer?.includes('ASSEMBLY'))continue;for(const p of g.geometry?.endpoints||[]){loX=Math.min(loX,p[0]);loY=Math.min(loY,p[1]);hiX=Math.max(hiX,p[0]);hiY=Math.max(hiY,p[1])}}
+  if(!Number.isFinite(loX)){loX=x-40;loY=y-40;hiX=x+40;hiY=y+40}
+  const margin=7/scale;ctx.save();ctx.strokeStyle='#ff5d97';ctx.lineWidth=2.5/scale;ctx.setLineDash([7/scale,4/scale]);ctx.strokeRect(loX-margin,loY-margin,hiX-loX+2*margin,hiY-loY+2*margin);ctx.setLineDash([]);
+  ctx.beginPath();ctx.arc(x,y,Math.max(10/scale,2),0,Math.PI*2);ctx.stroke();ctx.restore();
+}
+
+function bounds(){let xs=[],ys=[];for(const s of db.board?.outline||[]){for(const p of s.endpoints||[]){xs.push(p[0]);ys.push(p[1])}}if(!xs.length){for(const c of db.components||[]){if(c.position){xs.push(c.position[0]);ys.push(c.position[1])}}}return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]}
+function fit(){if(!db)return;const [x,y,X,Y]=bounds();center=[(x+X)/2,(y+Y)/2];const w=Math.max(1,X-x),h=Math.max(1,Y-y),a=Math.abs(Math.cos(theta)),b=Math.abs(Math.sin(theta));scale=Math.min((canvas.width-55)/(a*w+b*h),(canvas.height-55)/(b*w+a*h));pan=[0,0];paint()}
+function resize(){const r=canvas.getBoundingClientRect();canvas.width=Math.round(r.width);canvas.height=Math.round(r.height);if(db)fit();else{ctx.fillStyle='#081217';ctx.fillRect(0,0,canvas.width,canvas.height)}}
+function setup(d){if(!Array.isArray(d.layers)||!Array.isArray(d.zones)||!Array.isArray(d.tracks))throw Error('不支持该 JSON：需要 v0.8 layers/zones/tracks');
+  db=d;byLayer=new Map();zoneCache=new WeakMap();zoneBoundsCache=new WeakMap();componentMap=new Map((d.components||[]).map(c=>[c.refdes,c]));packageByRef=new Map();
+  for(const g of d.package_graphics||[]){if(g.refdes){if(!packageByRef.has(g.refdes))packageByRef.set(g.refdes,[]);packageByRef.get(g.refdes).push(g)}}
+  selectedComponent=null;selectedPin=null;validPads=0;invalidPads=0;validViaPads=0;emptyVias=0;
+  for(const l of d.layers)byLayer.set(l.allegro_layer,{zones:[],tracks:[],pads:[],vias:[]});
+  for(const z of d.zones)byLayer.get(z.layer)?.zones.push(z);
+  for(const t of d.tracks)byLayer.get(t.layer)?.tracks.push(t);
+  for(const p of d.pads||[]){if(validPad(p)){byLayer.get(p.layer)?.pads.push(p);validPads++}else invalidPads++} 
+  for(const v of d.vias||[]){
+    if(!Array.isArray(v.position)){emptyVias++;continue}
+    let n=0;for(const pad of v.pads||[]){
+      if(!validPad({...pad,position:v.position}))continue;
+      const perLayer=byLayer.get(pad.layer);if(!perLayer)continue;
+      perLayer.vias.push({id:v.id,net:v.net,position:v.position,rotation:v.rotation,pad});
+      validViaPads++;n++;
+    }
+    if(!n)emptyVias++;
+  }
+  active=new Set([d.layers[0].allegro_layer]);net=null;$('search').value='';$('componentSearch').value='';$('mode').value='all';nets=[...new Set([...d.zones.map(x=>x.net),...d.tracks.map(x=>x.net),...(d.pads||[]).map(x=>x.net),...(d.vias||[]).map(x=>x.net)].filter(Boolean))].sort();
+  $('layers').innerHTML=d.layers.map((l,i)=>`<label class="layer"><input type="checkbox" data-layer="${l.allegro_layer}" ${active.has(l.allegro_layer)?'checked':''}><span style="color:${colors[i%colors.length]}">${l.allegro_layer.replace('ETCH/','')}</span><small>${(byLayer.get(l.allegro_layer)?.zones.length||0)} 铜皮</small></label>`).join('');
+  $('stats').textContent=`铜层: ${d.layers.length}\n器件: ${d.components?.length||0}\n走线段: ${d.tracks.length}\nShape: ${d.zones.length}\n有效焊盘图形: ${validPads}\nVia对象: ${d.vias?.length||0}\nVia有效逐层图形: ${validViaPads}\n带钻孔定义Via: ${(d.vias||[]).filter(v=>Number(v.drill?.diameter)>0||Number(v.drill?.size?.[0])>0).length}\n无图形Via: ${emptyVias}\nNULL/无效占位: ${invalidPads}\n物理 PIN: ${d.pins?.length||0}\nPadstack诊断对象: ${d.padstack_diagnostics?.length||0}\n真实文字对象: ${d.text_graphics?.length||0}\nNet 名: ${nets.length}\n来源单位: ${d.source?.units||'未知'}`;
+  $('coverage').textContent=`⚠️ ${d.extraction_status?.zones||'未知'}；PIN=${d.extraction_status?.pins||'未知'}；TEXT=${d.extraction_status?.refdes_text||'not_exported'}；VIA=${d.extraction_status?.vias||'未知'}；独立铜皮=${d.extraction_status?.standalone_copper||'未知'}`;
+  searchNets();searchComponents();fit();
+}
+function searchNets(){if(!db)return;const q=$('search').value.trim().toLowerCase();let list=nets.filter(n=>n.toLowerCase().includes(q)).slice(0,45);if(net&&!list.includes(net))list.unshift(net);$('netlist').innerHTML=list.map(n=>`<button class="netrow ${net===n?'active':''}" data-net="${n.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;')}">${n.replaceAll('&','&amp;').replaceAll('<','&lt;')}</button>`).join('');$('netinfo').textContent=net?`当前：${net}；所属 Shape：${db.zones.filter(z=>z.net===net).length}`:'未选择网络'}
+$('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{$('overlay').textContent=`正在读取 ${f.name}…`;await new Promise(r=>setTimeout(r,25));const d=JSON.parse(await f.text());setup(d)}catch(err){alert(`加载失败: ${err.message}`);$('overlay').textContent=err.message}};
+$('layers').onchange=e=>{const l=e.target.dataset.layer;if(!l)return;e.target.checked?active.add(l):active.delete(l);paint()};
+function selectedLayers(s){active=new Set(s);$('layers').querySelectorAll('input').forEach(x=>x.checked=active.has(x.dataset.layer));paint()}
+const graphicControls=['zones','tracks','pads','vias','drills','diagAnti','diagThermal','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText'];
+function applyPreset(which){
+  if(!db)return;
+  if(which==='none'){
+    for(const id of graphicControls)$(id).checked=false;
+    selectedLayers([]);return;
+  }
+  if(which==='all'){selectedLayers(db.layers.map(x=>x.allegro_layer));return}
+  const isTop=which==='top';
+  for(const id of ['zones','tracks','pads','vias','drills','diagAnti','diagThermal','board'])$(id).checked=true;
+  for(const kind of ['parts','silk','assembly']){
+    $(kind+'Top').checked=isTop;$(kind+'Bottom').checked=!isTop;
+  }
+  // Place Bound and auto-labels are separate optional overlays.
+  $('diagAnti').checked=false;$('diagThermal').checked=false;
+  $('placeTop').checked=false;$('placeBottom').checked=false;$('refdes').checked=false;
+  $('textTop').checked=isTop;$('textBottom').checked=!isTop;$('pinNumbers').checked=true;$('auxText').checked=false;
+  selectedLayers([isTop?'ETCH/TOP':'ETCH/BOTTOM']);
+}
+$('all').onclick=()=>applyPreset('all');$('none').onclick=()=>applyPreset('none');$('top').onclick=()=>applyPreset('top');$('bottom').onclick=()=>applyPreset('bottom');
+for(const id of ['zones','tracks','pads','vias','drills','diagAnti','diagThermal','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText','mode'])$(id).onchange=paint;
+function rotate(v){theta=v*Math.PI/180;$('angle').value=v;fit()};$('rotL').onclick=()=>rotate((Number($('angle').value)-90+360)%360);$('rotR').onclick=()=>rotate((Number($('angle').value)+90)%360);$('angle').onchange=()=>rotate(Number($('angle').value));$('face').onchange=e=>{mirror=e.target.value==='bottom';paint()};$('fit').onclick=fit;
+function selectNet(value){net=value||null;if(net){$('search').value=net;$('mode').value='highlight'}else{$('search').value='';$('mode').value='all'}searchNets();paint()}
+function selectComponent(value){selectedComponent=value&&componentMap.has(value)?value:null;$('componentSearch').value=selectedComponent||'';searchComponents();paint()}
+function searchComponents(){if(!db)return;const q=$('componentSearch').value.trim().toLowerCase();let list=(db.components||[]).filter(c=>!q||[c.refdes,c.value,c.footprint].some(v=>String(v||'').toLowerCase().includes(q))).slice(0,60);
+  if(selectedComponent&&!list.some(c=>c.refdes===selectedComponent)){const c=componentMap.get(selectedComponent);if(c)list.unshift(c)}
+  $('componentList').innerHTML=list.map(c=>`<button class="netrow ${selectedComponent===c.refdes?'active':''}" data-refdes="${esc(c.refdes)}">${esc(c.refdes)} · ${esc(c.side)} · ${esc(c.value)}</button>`).join('');
+  const c=componentMap.get(selectedComponent);$('componentInfo').textContent=c?`${c.refdes} · ${c.side} · ${c.footprint} · (${c.position?.join(', ')})`:'未选择器件';}
+$('search').oninput=()=>{const q=$('search').value.trim();const matches=nets.filter(n=>n.toLowerCase()===q.toLowerCase());if(matches.length===1){net=matches[0];$('mode').value='highlight';paint()}searchNets()};
+$('netlist').onclick=e=>{const b=e.target.closest('[data-net]');if(b)selectNet(b.dataset.net)};
+$('clear').onclick=()=>selectNet(null);
+$('componentSearch').oninput=()=>{const q=$('componentSearch').value.trim();const c=[...componentMap.keys()].find(x=>x.toLowerCase()===q.toLowerCase());if(c){selectedComponent=c;paint()}searchComponents()};
+$('componentList').onclick=e=>{const b=e.target.closest('[data-refdes]');if(b)selectComponent(b.dataset.refdes)};
+$('clearComponent').onclick=()=>selectComponent(null);
+
+let pointerDown=null;
+canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];pointerDown=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)};
+canvas.onpointermove=e=>{if(!drag||!db)return;pan[0]+=e.clientX-drag[0];pan[1]+=e.clientY-drag[1];drag=[e.clientX,e.clientY];paint()};
+canvas.onpointerup=e=>{const click=pointerDown&&Math.hypot(e.clientX-pointerDown[0],e.clientY-pointerDown[1])<5;drag=null;pointerDown=null;if(click&&db)pickAt(e)};
+canvas.onpointercancel=()=>{drag=null;pointerDown=null};
+canvas.onwheel=e=>{if(!db)return;e.preventDefault();let f=Math.exp(-e.deltaY*.001);let old=scale;scale=Math.min(100,Math.max(.0001,scale*f));const r=canvas.getBoundingClientRect(),x=e.clientX-r.left-canvas.width/2-pan[0],y=e.clientY-r.top-canvas.height/2-pan[1];const ratio=scale/old;pan[0]-=x*(ratio-1);pan[1]-=y*(ratio-1);paint()};
+new ResizeObserver(resize).observe($('canvaswrap'));resize();
+  </script>
+ </body>
+</html>
+
