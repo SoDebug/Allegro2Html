@@ -3,7 +3,7 @@
 const $=id=>document.getElementById(id),canvas=$('canvas'),ctx=canvas.getContext('2d',{alpha:false});
 const colors=['#e9a659','#6dc9b3','#86aeff','#c29cf0','#73dca8','#9fafec','#e4c17a','#77c9df','#e69aae','#d4a3df','#c3d994','#9dd2e4','#c2aaee','#e89ab2','#85d3a1','#eac77a','#a6bbe0','#f09f80'];
 let db=null,active=new Set(),net=null,theta=0,mirror=false,scale=1,center=[0,0],pan=[0,0],drag=null;
-let byLayer=new Map(),zoneCache=new WeakMap(),zoneBoundsCache=new WeakMap(),nets=[],componentMap=new Map(),packageByRef=new Map(),selectedComponent=null,selectedPin=null,validPads=0,invalidPads=0;const EPS=1e-7;
+let byLayer=new Map(),zoneCache=new WeakMap(),zoneBoundsCache=new WeakMap(),nets=[],componentMap=new Map(),packageByRef=new Map(),selectedComponent=null,selectedPin=null,validPads=0,invalidPads=0,validViaPads=0,emptyVias=0;const EPS=1e-7;
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const validPad=p=>Array.isArray(p.position)&&Array.isArray(p.size)&&Number(p.size[0])>0&&Number(p.size[1])>0&&p.shape!=='NULL';
 function current(){return {x:canvas.width/2+pan[0],y:canvas.height/2+pan[1]}};
@@ -111,9 +111,99 @@ function renderPads(layer,useNet,mode){
   }
   return n;
 }
+// Via graphics are separate from component PIN pads. Each via carries its own
+// per-layer REGULAR pad previews; never guess drill diameter or unlisted layers.
+function renderVias(layer,useNet,mode){
+  if(!$('vias').checked)return 0;
+  let count=0;
+  for(const v of byLayer.get(layer)?.vias||[]){
+    if(useNet&&mode==='isolate'&&v.net!==net)continue;
+    const g=v.pad,sz=g.size,pos=v.position;
+    if(!Array.isArray(pos)||!Array.isArray(sz)||!(sz[0]>0&&sz[1]>0))continue;
+    const highlighted=useNet&&v.net===net;
+    ctx.save();ctx.translate(pos[0],pos[1]);ctx.rotate((Number(v.rotation)||0)*Math.PI/180);
+    ctx.globalAlpha=useNet&&!highlighted?.08:.95;ctx.fillStyle=highlighted?'#ffef81':'#e9d3a0';
+    const shape=String(g.shape||'').toUpperCase();
+    if(shape.includes('CIRCLE')||shape.includes('ROUND')&&!shape.includes('RECT')){
+      ctx.beginPath();ctx.ellipse(0,0,sz[0]/2,sz[1]/2,0,0,2*Math.PI);ctx.fill();
+    }else if(shape.includes('OBLONG')){
+      ctx.beginPath();ctx.roundRect(-sz[0]/2,-sz[1]/2,sz[0],sz[1],Math.min(...sz)/2);ctx.fill();
+    }else ctx.fillRect(-sz[0]/2,-sz[1]/2,sz[0],sz[1]);
+    ctx.restore();count++;
+  }
+  return count;
+}
+// Text is rendered independently from footprint geometry. Design-level duplicates
+// matching symbol-child glyph records are de-duplicated for display only.
+// Authentic REF DES labels are separate from footprint auxiliary markings.
+function drawRealTexts(){
+  if(!db?.text_graphics?.length)return 0;
+  let count=0,seen=new Set();
+  const aux=$('auxText').checked;
+  for(const t of db.text_graphics){
+    const l=String(t.layer||''),up=l.toUpperCase(),isTop=up.endsWith('_TOP'),isBot=up.endsWith('_BOTTOM');
+    if(!isTop&&!isBot)continue;
+    const sideOn=(isTop&&$('textTop').checked)||(isBot&&$('textBottom').checked);
+    const auxOn=(isTop&&$('silkTop').checked)||(isBot&&$('silkBottom').checked)||
+                (isTop&&$('assemblyTop').checked)||(isBot&&$('assemblyBottom').checked);
+    const isRefdes=up==='REF DES/SILKSCREEN_TOP'||up==='REF DES/SILKSCREEN_BOTTOM';
+    const isExtra=up.startsWith('PACKAGE GEOMETRY/')||up.startsWith('BOARD GEOMETRY/')||
+                  up.startsWith('REF DES/ASSEMBLY_')||up.startsWith('PIN NUMBER/');
+    if(!(isRefdes&&sideOn || aux&&isExtra&&auxOn))continue;
+    if(!Array.isArray(t.position)||!t.text)continue;
+    const k=[l,t.refdes,t.text,t.position.join(','),t.rotation,t.mirrored,t.text_block,t.height,t.width,t.stroke_width].join('|');
+    if(seen.has(k))continue;seen.add(k);
+    const [x,y]=t.position;
+    const h=Number(t.height)>0?Number(t.height):12;
+    ctx.save();ctx.translate(x,y);
+    ctx.rotate((Number(t.rotation)||0)*Math.PI/180);
+    // The board view mirrors its X axis on the bottom side. Undo that for
+    // glyphs so that text is readable, without moving the label anchor.
+    ctx.scale((mirror?-1:1)*(t.mirrored?-1:1),-1);
+    ctx.font=`${h}px sans-serif`;
+    ctx.textBaseline='alphabetic';
+    const align=String(t.justify||'').toUpperCase();
+    ctx.textAlign=align==='RIGHT'?'right':align==='CENTER'?'center':'left';
+    ctx.fillStyle=up.includes('SILKSCREEN')?'#a8eabb':'#f4d6a0';
+    ctx.globalAlpha=1;ctx.fillText(String(t.text),0,0);
+    ctx.restore();count++;
+  }
+  return count;
+}
+function drawPinNumbers(){
+  if(!$('pinNumbers').checked||!db?.pins?.length)return 0;
+  // Screen-space label sizes, not physical silkscreen. Only draw when legible.
+  const selected=selectedComponent;
+  const threshold=selected?0.32:0.78;
+  if(scale<threshold)return 0;
+  const top=active.has('ETCH/TOP'),bottom=active.has('ETCH/BOTTOM');
+  const W=canvas.width,H=canvas.height,cs=Math.cos(theta),sn=Math.sin(theta);
+  const o=current(),factor=scale*(mirror?-1:1);
+  let count=0;
+  ctx.save();ctx.fillStyle='#ffe1a8';ctx.globalAlpha=.95;
+  for(const p of db.pins){
+    if(!p.position||p.number===null||p.number===undefined||String(p.number).trim()==='')continue;
+    if(selected&&p.refdes!==selected)continue;
+    const c=componentMap.get(p.refdes),side=c?.side||'top';
+    if(!(p.through&&(top||bottom)||(side==='top'&&top)||(side==='bottom'&&bottom)))continue;
+    const [x,y]=p.position;
+    if(!Number.isFinite(x)||!Number.isFinite(y))continue;
+    const dx=x-center[0],dy=y-center[1];
+    const sx=o.x+cs*factor*dx+sn*scale*dy;
+    const sy=o.y+sn*factor*dx-cs*scale*dy;
+    if(sx<4||sy<4||sx>W-4||sy>H-4)continue;
+    ctx.save();ctx.translate(x,y);
+    ctx.scale(mirror?-1:1,-1);
+    ctx.font=`${Math.min(17,Math.max(7,10/scale))}px sans-serif`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(String(p.number),0,-Math.min(8,6/scale));
+    ctx.restore();count++;
+  }
+  ctx.restore();return count;
+}
 function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081217';ctx.fillRect(0,0,canvas.width,canvas.height);
   const origin=current();ctx.translate(origin.x,origin.y);ctx.rotate(theta);ctx.scale(scale*(mirror?-1:1),-scale);ctx.translate(-center[0],-center[1]);
-  const mode=$('mode').value,useNet=net!==null&&mode!=='all';let nzone=0,ntrack=0,npad=0;
+  const mode=$('mode').value,useNet=net!==null&&mode!=='all';let nzone=0,ntrack=0,npad=0,nvia=0;
   const layers=db.layers.map(l=>l.allegro_layer).filter(l=>active.has(l));
   if($('zones').checked){for(const layer of layers){let a=byLayer.get(layer)?.zones||[];
     for(const z of a){if(useNet&&mode==='isolate'&&z.net!==net)continue;
@@ -125,6 +215,7 @@ function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081
   }}ctx.globalAlpha=1;
   if($('tracks').checked){for(const layer of layers){ntrack+=renderTracks(byLayer.get(layer)?.tracks||[],layer,useNet,mode)}}ctx.globalAlpha=1;
   for(const layer of layers)npad+=renderPads(layer,useNet,mode);ctx.globalAlpha=1;
+  for(const layer of layers)nvia+=renderVias(layer,useNet,mode);ctx.globalAlpha=1;
   ctx.lineCap='round';ctx.lineJoin='round';
   if($('board').checked){ctx.strokeStyle='#f1f5f4';ctx.lineWidth=1.3/scale;for(const seg of db.board?.outline||[])drawSegment(seg)}
   if($('silkTop').checked||$('silkBottom').checked||$('assemblyTop').checked||$('assemblyBottom').checked||$('placeTop').checked||$('placeBottom').checked){ctx.lineWidth=0.9/scale;for(const item of db.package_graphics||[]){const l=item.layer||'';
@@ -134,8 +225,9 @@ function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081
     ctx.strokeStyle=kind==='silk'?(side==='Top'?'#92e1b2':'#f0ba86'):kind==='assembly'?'#8ba8d9':'#7f8188';
     ctx.lineWidth=Math.max(.9/scale,Number(item.geometry?.width)||0);ctx.setLineDash(kind==='place'?[5/scale,3/scale]:[]);drawSegment(item.geometry)}ctx.setLineDash([])}
   for(const c of db.components||[]){if(!(c.side==='top'&&$('partsTop').checked||c.side==='bottom'&&$('partsBottom').checked))continue;if(!c.position)continue;const [x,y]=c.position;const rr=4/scale;ctx.strokeStyle=c.side==='top'?'#63ffc8':'#ffa568';ctx.lineWidth=1.2/scale;ctx.beginPath();ctx.moveTo(x-rr,y);ctx.lineTo(x+rr,y);ctx.moveTo(x,y-rr);ctx.lineTo(x,y+rr);ctx.stroke();if($('refdes').checked&&scale>0.16){ctx.save();ctx.translate(x,y);ctx.scale(1,-1);ctx.font=`${12/scale}px sans-serif`;ctx.fillStyle=ctx.strokeStyle;ctx.fillText(c.refdes||'',6/scale,0);ctx.restore()}}
+  const ntext=drawRealTexts(),npinnum=drawPinNumbers();
   drawSelection();
-  ctx.setTransform(1,0,0,1,0,0);$('overlay').textContent=`可见铜层 ${layers.length}/18 · 已绘制铺铜 ${nzone} · 走线 ${ntrack} · 焊盘图形 ${npad} · 网络 ${net||'全部'} · 缩放 ${scale.toFixed(2)} px/mil`;
+  ctx.setTransform(1,0,0,1,0,0);$('overlay').textContent=`可见铜层 ${layers.length}/18 · 已绘制铺铜 ${nzone} · 走线 ${ntrack} · 焊盘图形 ${npad} · Via焊盘 ${nvia} · 文字 ${ntext} · PIN号 ${npinnum} · 网络 ${net||'全部'} · 缩放 ${scale.toFixed(2)} px/mil`;
 }
 
 function worldAt(e){const rect=canvas.getBoundingClientRect(),u=e.clientX-rect.left-canvas.width/2-pan[0],v=e.clientY-rect.top-canvas.height/2-pan[1];const cs=Math.cos(theta),sn=Math.sin(theta);const xx=cs*u+sn*v,yy=-sn*u+cs*v;return [center[0]+xx/(scale*(mirror?-1:1)),center[1]-yy/scale]}
@@ -153,6 +245,12 @@ function pickAt(e){
     const distance=Math.max(0,Math.hypot(dx,dy)-Math.max(sz[0],sz[1])/2);
     if(distance<best){best=distance;pick={type:'pad',obj:p}}
   }}
+  if(!pick&&allowNet&&$('vias').checked){for(const layer of active){for(const v of byLayer.get(layer)?.vias||[]){
+    if(!v.net||!Array.isArray(v.position))continue;
+    const r=Math.max(v.pad.size[0],v.pad.size[1])/2;
+    const d=Math.hypot(x-v.position[0],y-v.position[1]);
+    if(d<=r+tol&&Math.max(0,d-r)<best){best=Math.max(0,d-r);pick={type:'via',obj:v}}
+  }}}
   if(!pick&&allowComponent){for(const c of db.components||[]){if(!c.position)continue;
     const dist=Math.hypot(x-c.position[0],y-c.position[1]);
     if(dist<best){best=dist;pick={type:'component',obj:c}}
@@ -184,7 +282,7 @@ function updatePickHint(){
   const c=$('pickComponent').checked,n=$('pickNet').checked;
   $('pickHint').textContent=c&&n?'两项已开启：点击焊盘可同时选中器件和网络；点击铺铜选中网络。':
     c?'仅选择器件：点击焊盘或器件中心，不更改网络选择。':
-    n?'仅选择网络：点击焊盘、走线或铺铜，不更改器件选择。':
+    n?'仅选择网络：点击焊盘、Via、走线或铺铜，不更改器件选择。':
     '两项均关闭：点击 PCB 不会更改任何选择。';
 }
 $('pickComponent').onchange=updatePickHint;
@@ -204,22 +302,32 @@ function resize(){const r=canvas.getBoundingClientRect();canvas.width=Math.round
 function setup(d){if(!Array.isArray(d.layers)||!Array.isArray(d.zones)||!Array.isArray(d.tracks))throw Error('不支持该 JSON：需要 v0.8 layers/zones/tracks');
   db=d;byLayer=new Map();zoneCache=new WeakMap();zoneBoundsCache=new WeakMap();componentMap=new Map((d.components||[]).map(c=>[c.refdes,c]));packageByRef=new Map();
   for(const g of d.package_graphics||[]){if(g.refdes){if(!packageByRef.has(g.refdes))packageByRef.set(g.refdes,[]);packageByRef.get(g.refdes).push(g)}}
-  selectedComponent=null;selectedPin=null;validPads=0;invalidPads=0;
-  for(const l of d.layers)byLayer.set(l.allegro_layer,{zones:[],tracks:[],pads:[]});
+  selectedComponent=null;selectedPin=null;validPads=0;invalidPads=0;validViaPads=0;emptyVias=0;
+  for(const l of d.layers)byLayer.set(l.allegro_layer,{zones:[],tracks:[],pads:[],vias:[]});
   for(const z of d.zones)byLayer.get(z.layer)?.zones.push(z);
   for(const t of d.tracks)byLayer.get(t.layer)?.tracks.push(t);
   for(const p of d.pads||[]){if(validPad(p)){byLayer.get(p.layer)?.pads.push(p);validPads++}else invalidPads++} 
-  active=new Set([d.layers[0].allegro_layer]);net=null;$('search').value='';$('componentSearch').value='';$('mode').value='all';nets=[...new Set([...d.zones.map(x=>x.net),...d.tracks.map(x=>x.net),...(d.pads||[]).map(x=>x.net)].filter(Boolean))].sort();
+  for(const v of d.vias||[]){
+    if(!Array.isArray(v.position)){emptyVias++;continue}
+    let n=0;for(const pad of v.pads||[]){
+      if(!validPad({...pad,position:v.position}))continue;
+      const perLayer=byLayer.get(pad.layer);if(!perLayer)continue;
+      perLayer.vias.push({id:v.id,net:v.net,position:v.position,rotation:v.rotation,pad});
+      validViaPads++;n++;
+    }
+    if(!n)emptyVias++;
+  }
+  active=new Set([d.layers[0].allegro_layer]);net=null;$('search').value='';$('componentSearch').value='';$('mode').value='all';nets=[...new Set([...d.zones.map(x=>x.net),...d.tracks.map(x=>x.net),...(d.pads||[]).map(x=>x.net),...(d.vias||[]).map(x=>x.net)].filter(Boolean))].sort();
   $('layers').innerHTML=d.layers.map((l,i)=>`<label class="layer"><input type="checkbox" data-layer="${l.allegro_layer}" ${active.has(l.allegro_layer)?'checked':''}><span style="color:${colors[i%colors.length]}">${l.allegro_layer.replace('ETCH/','')}</span><small>${(byLayer.get(l.allegro_layer)?.zones.length||0)} 铜皮</small></label>`).join('');
-  $('stats').textContent=`铜层: ${d.layers.length}\n器件: ${d.components?.length||0}\n走线段: ${d.tracks.length}\nShape: ${d.zones.length}\n有效焊盘图形: ${validPads}\nNULL/无效占位: ${invalidPads}\n物理 PIN: ${d.pins?.length||0}\nNet 名: ${nets.length}\n来源单位: ${d.source?.units||'未知'}`;
-  $('coverage').textContent=`⚠️ ${d.extraction_status?.zones||'未知'}；PIN=${d.extraction_status?.pins||'未知'}；VIA=${d.extraction_status?.vias||'未知'}；独立铜皮=${d.extraction_status?.standalone_copper||'未知'}`;
+  $('stats').textContent=`铜层: ${d.layers.length}\n器件: ${d.components?.length||0}\n走线段: ${d.tracks.length}\nShape: ${d.zones.length}\n有效焊盘图形: ${validPads}\nVia对象: ${d.vias?.length||0}\nVia有效逐层图形: ${validViaPads}\n无图形Via: ${emptyVias}\nNULL/无效占位: ${invalidPads}\n物理 PIN: ${d.pins?.length||0}\n真实文字对象: ${d.text_graphics?.length||0}\nNet 名: ${nets.length}\n来源单位: ${d.source?.units||'未知'}`;
+  $('coverage').textContent=`⚠️ ${d.extraction_status?.zones||'未知'}；PIN=${d.extraction_status?.pins||'未知'}；TEXT=${d.extraction_status?.refdes_text||'not_exported'}；VIA=${d.extraction_status?.vias||'未知'}；独立铜皮=${d.extraction_status?.standalone_copper||'未知'}`;
   searchNets();searchComponents();fit();
 }
 function searchNets(){if(!db)return;const q=$('search').value.trim().toLowerCase();let list=nets.filter(n=>n.toLowerCase().includes(q)).slice(0,45);if(net&&!list.includes(net))list.unshift(net);$('netlist').innerHTML=list.map(n=>`<button class="netrow ${net===n?'active':''}" data-net="${n.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;')}">${n.replaceAll('&','&amp;').replaceAll('<','&lt;')}</button>`).join('');$('netinfo').textContent=net?`当前：${net}；所属 Shape：${db.zones.filter(z=>z.net===net).length}`:'未选择网络'}
 $('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{$('overlay').textContent=`正在读取 ${f.name}…`;await new Promise(r=>setTimeout(r,25));const d=JSON.parse(await f.text());setup(d)}catch(err){alert(`加载失败: ${err.message}`);$('overlay').textContent=err.message}};
 $('layers').onchange=e=>{const l=e.target.dataset.layer;if(!l)return;e.target.checked?active.add(l):active.delete(l);paint()};
 function selectedLayers(s){active=new Set(s);$('layers').querySelectorAll('input').forEach(x=>x.checked=active.has(x.dataset.layer));paint()}
-const graphicControls=['zones','tracks','pads','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes'];
+const graphicControls=['zones','tracks','pads','vias','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText'];
 function applyPreset(which){
   if(!db)return;
   if(which==='none'){
@@ -228,16 +336,17 @@ function applyPreset(which){
   }
   if(which==='all'){selectedLayers(db.layers.map(x=>x.allegro_layer));return}
   const isTop=which==='top';
-  for(const id of ['zones','tracks','pads','board'])$(id).checked=true;
+  for(const id of ['zones','tracks','pads','vias','board'])$(id).checked=true;
   for(const kind of ['parts','silk','assembly']){
     $(kind+'Top').checked=isTop;$(kind+'Bottom').checked=!isTop;
   }
   // Place Bound and auto-labels are separate optional overlays.
   $('placeTop').checked=false;$('placeBottom').checked=false;$('refdes').checked=false;
+  $('textTop').checked=isTop;$('textBottom').checked=!isTop;$('pinNumbers').checked=true;$('auxText').checked=false;
   selectedLayers([isTop?'ETCH/TOP':'ETCH/BOTTOM']);
 }
 $('all').onclick=()=>applyPreset('all');$('none').onclick=()=>applyPreset('none');$('top').onclick=()=>applyPreset('top');$('bottom').onclick=()=>applyPreset('bottom');
-for(const id of ['zones','tracks','pads','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','mode'])$(id).onchange=paint;
+for(const id of ['zones','tracks','pads','vias','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText','mode'])$(id).onchange=paint;
 function rotate(v){theta=v*Math.PI/180;$('angle').value=v;fit()};$('rotL').onclick=()=>rotate((Number($('angle').value)-90+360)%360);$('rotR').onclick=()=>rotate((Number($('angle').value)+90)%360);$('angle').onchange=()=>rotate(Number($('angle').value));$('face').onchange=e=>{mirror=e.target.value==='bottom';paint()};$('fit').onclick=fit;
 function selectNet(value){net=value||null;if(net){$('search').value=net;$('mode').value='highlight'}else{$('search').value='';$('mode').value='all'}searchNets();paint()}
 function selectComponent(value){selectedComponent=value&&componentMap.has(value)?value:null;$('componentSearch').value=selectedComponent||'';searchComponents();paint()}
