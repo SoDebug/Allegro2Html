@@ -73,6 +73,24 @@ procedure(pjt09WantedTextLayer(layerName)
     rexMatchp("^BOARD GEOMETRY/SILKSCREEN_" layerName))
 )
 
+; Read only documented padstack drill-definition fields. Null means unknown,
+; not zero. The geometry is a preview, not a verified manufacturing drill path.
+procedure(pjt092DrillJson(obj)
+  let((def dia w h off fig)
+    def = nil dia = nil w = nil h = nil off = nil fig = nil
+    when(obj def = obj->definition)
+    when(def
+      dia = def->drillDiameter
+      w = def->drillSizeWidth
+      h = def->drillSizeHeight
+      off = def->drillOffset
+      fig = def->drillFigureName
+    )
+    sprintf(nil "{\"diameter\":%s,\"size\":[%s,%s],\"offset\":%s,\"figure\":%s,\"geometry_verified\":false}"
+      pjt08Num(dia) pjt08Num(w) pjt08Num(h) pjt08XY(off) pjt08Quote(fig))
+  )
+)
+
 procedure(pcbExport()
   let((dsn port log layers layerNo sub sym comp compdef props prop value package refdes
       side net branch child seg netName nLayers nComps nSeg nShapes nVias nPins
@@ -134,10 +152,10 @@ procedure(pcbExport()
           unless(pinNo nPinsWithoutNumber = nPinsWithoutNumber + 1)
           pinNet = nil
           when(pin->net pinNet = pin->net->name)
-          fprintf(port "{\"id\":\"PIN%06d\",\"refdes\":%s,\"number\":%s,\"padstack\":%s,\"net\":%s,\"position\":%s,\"rotation\":%s,\"through\":%s}"
+          fprintf(port "{\"id\":\"PIN%06d\",\"refdes\":%s,\"number\":%s,\"padstack\":%s,\"net\":%s,\"position\":%s,\"rotation\":%s,\"through\":%s,\"drill\":%s}"
             nPhysicalPins pjt08Quote(refdes) pjt08Quote(pinNo) pjt08Quote(pin->name)
             pjt08Quote(pinNet) pjt08XY(pin->xy) pjt08Num(pin->rotation)
-            if(pin->isThrough then "true" else "false"))
+            if(pin->isThrough then "true" else "false") pjt092DrillJson(pin))
         )
       )
     )
@@ -190,9 +208,9 @@ procedure(pcbExport()
               viaSeen[viaObj] = t
               pjt08Comma(port viaCount)
               viaCount = viaCount + 1
-              fprintf(port "{\"id\":\"VIA%06d\",\"net\":%s,\"position\":%s,\"padstack\":%s,\"rotation\":%s,\"pads\":["
+              fprintf(port "{\"id\":\"VIA%06d\",\"net\":%s,\"position\":%s,\"padstack\":%s,\"rotation\":%s,\"drill\":%s,\"pads\":["
                 viaCount pjt08Quote(viaNet) pjt08XY(viaObj->xy)
-                pjt08Quote(viaObj->name) pjt08Num(viaObj->rotation))
+                pjt08Quote(viaObj->name) pjt08Num(viaObj->rotation) pjt092DrillJson(viaObj))
               viaPadNum = 0
               foreach(sub layers
                 viaPadLayer = strcat("ETCH/" sub)
@@ -343,7 +361,7 @@ procedure(pcbExport()
     )
     fprintf(port "\n],\n")
     ; Diagnostics are intentionally honest: all unimplemented categories are UNKNOWN, not EMPTY.
-    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"collected_text_objects_unverified\",\"refdes_text\":\"collected_text_objects_unverified\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"net_branch_regular_pad_bbox_unverified\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"not_exported\",\"standalone_copper\":\"not_verified\"}\n}")
+    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"collected_text_objects_unverified\",\"refdes_text\":\"collected_text_objects_unverified\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"net_branch_regular_pad_bbox_unverified\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"padstack_definition_unverified\",\"standalone_copper\":\"not_verified\"}\n}")
     fprintf(log "PcbToJson v0.8 core preview\n")
     fprintf(log "layers=%d\ncomponents=%d\ntracks_segments=%d\nnet_associated_shapes=%d\nshape_outer_segments=%d\nshape_void_segments=%d\nboard_outline_segments=%d\npackage_segments=%d\npackage_text_not_exported=%d\n"
       nLayers nComps nSeg nShapes nShapeSeg nShapeVoidSeg nBoardSeg nPkgSeg nText)
@@ -363,9 +381,10 @@ procedure(pcbExport()
         fprintf(log "SHAPE_COVERAGE layer=%s query_failed=true\n" shapeName)
       )
     )
+    fprintf(log "drill_data_source=padstack_definition_unverified\n")
     fprintf(log "vias=%d\nvia_valid_pad_layer_records=%d\nvia_null_or_invalid_pad_layers=%d\nvia_duplicate_branch_references=%d\n" viaCount viaPadCount viaNullPadCount viaDupCount)
     fprintf(log "BLOCKED: net-associated shapes need count/geometry comparison to Allegro.\n")
-    fprintf(log "BLOCKED: standalone copper, mask/paste, drill NOT exported; via REGULAR geometry only as BBOX preview; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
+    fprintf(log "BLOCKED: standalone copper, mask/paste NOT exported; drill definition collected unverified; via REGULAR geometry only as BBOX preview; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
     close(port) close(log)
     printf("pcbExport v0.8 preview: %d layers, %d segments, %d net shapes\n" nLayers nSeg nShapes)
   )
