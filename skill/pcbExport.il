@@ -41,13 +41,45 @@ procedure(pjt08Segment(port, seg, layer, netName, sourceKind, objIdx, segIdx)
       if(isArc then if(cw then "true" else "false") else "null"))
   )
 )
+
+; Text object as placed in Allegro (NOT inferred from component center).
+; Font metrics are advisory: the viewer uses substitute fonts, so the shape of glyphs is unverified.
+procedure(pjt09TextRecord(port obj refdes sourceName)
+  let((tb info textHeight textWidth strokeWidth blockName)
+    tb = nil info = nil textHeight = nil textWidth = nil strokeWidth = nil
+    when(obj->textBlock
+      blockName = strcat("paramTextBlock:" obj->textBlock)
+      info = errset(axlGetParam(blockName) t)
+      when(info tb = car(info))
+    )
+    when(tb
+      textHeight = tb->height
+      textWidth = tb->width
+      strokeWidth = tb->photoWidth
+    )
+    fprintf(port "{\"layer\":%s,\"refdes\":%s,\"source\":%s,\"text\":%s,\"position\":%s,\"rotation\":%s,\"mirrored\":%s,\"justify\":%s,\"text_block\":%s,\"height\":%s,\"width\":%s,\"stroke_width\":%s}"
+      pjt08Quote(obj->layer) pjt08Quote(refdes) pjt08Quote(sourceName)
+      pjt08Quote(obj->text) pjt08XY(obj->xy) pjt08Num(obj->rotation)
+      if(obj->isMirrored then "true" else "false")
+      pjt08Quote(obj->justify) pjt08Quote(obj->textBlock)
+      pjt08Num(textHeight) pjt08Num(textWidth) pjt08Num(strokeWidth))
+  )
+)
+procedure(pjt09WantedTextLayer(layerName)
+  layerName && (rexMatchp("^REF DES/" layerName) ||
+    rexMatchp("^PIN NUMBER/" layerName) ||
+    rexMatchp("^PACKAGE GEOMETRY/SILKSCREEN_" layerName) ||
+    rexMatchp("^PACKAGE GEOMETRY/ASSEMBLY_" layerName) ||
+    rexMatchp("^BOARD GEOMETRY/SILKSCREEN_" layerName))
+)
+
 procedure(pcbExport()
   let((dsn port log layers layerNo sub sym comp compdef props prop value package refdes
       side net branch child seg netName nLayers nComps nSeg nShapes nVias nPins
       nText nShapeSeg nBoardSeg nPkgSeg i j shape void outline layerName
       nShapeVoidSeg nNoNetShapes shapeQuery shapeFound shapeName
       pin physIdx pinNo pinNet pad padQuery padLayer padBox padWidth padHeight
-      padFig nPhysicalPins nPadRecords nPadErrors nPinsWithoutNumber pinName pinRotation)
+      padFig nPhysicalPins nPadRecords nPadErrors nPinsWithoutNumber pinName pinRotation nTextGraphics nTextFromSymbols nTextFromDesign textObj)
     dsn = axlDBGetDesign()
     unless(dsn error("pcbExport: open a PCB design first.\n"))
     layers = axlGetParam("paramLayerGroup:ETCH")->groupMembers
@@ -232,12 +264,39 @@ procedure(pcbExport()
         )
       )
     )
+    fprintf(port "\n],\n\"text_graphics\":[\n")
+    nTextGraphics = 0 nTextFromSymbols = 0 nTextFromDesign = 0
+    ; Symbol-scoped text is preferred: it permits exact reference ownership.
+    foreach(sym dsn->symbols
+      refdes = sym->refdes
+      when(refdes
+        foreach(textObj sym->children
+          when(textObj->objType == "text" && pjt09WantedTextLayer(textObj->layer)
+            pjt08Comma(port nTextGraphics)
+            pjt09TextRecord(port textObj refdes "symbol_child")
+            nTextGraphics = nTextGraphics + 1
+            nTextFromSymbols = nTextFromSymbols + 1
+          )
+        )
+      )
+    )
+    ; Design-level text includes independent labels outside component symbols.
+    ; There may be references also reachable through symbols: validate geometrical overlap.
+    foreach(textObj dsn->text
+      when(textObj->objType == "text" && pjt09WantedTextLayer(textObj->layer)
+        pjt08Comma(port nTextGraphics)
+        pjt09TextRecord(port textObj nil "design_text")
+        nTextGraphics = nTextGraphics + 1
+        nTextFromDesign = nTextFromDesign + 1
+      )
+    )
     fprintf(port "\n],\n")
     ; Diagnostics are intentionally honest: all unimplemented categories are UNKNOWN, not EMPTY.
-    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"not_exported\",\"refdes_text\":\"not_exported\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"not_exported\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"not_exported\",\"standalone_copper\":\"not_verified\"}\n}")
+    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"collected_text_objects_unverified\",\"refdes_text\":\"collected_text_objects_unverified\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"not_exported\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"not_exported\",\"standalone_copper\":\"not_verified\"}\n}")
     fprintf(log "PcbToJson v0.8 core preview\n")
     fprintf(log "layers=%d\ncomponents=%d\ntracks_segments=%d\nnet_associated_shapes=%d\nshape_outer_segments=%d\nshape_void_segments=%d\nboard_outline_segments=%d\npackage_segments=%d\npackage_text_not_exported=%d\n"
       nLayers nComps nSeg nShapes nShapeSeg nShapeVoidSeg nBoardSeg nPkgSeg nText)
+    fprintf(log "text_graphics=%d\ntext_from_symbols=%d\ntext_from_design=%d\n" nTextGraphics nTextFromSymbols nTextFromDesign)
     fprintf(log "physical_pins=%d\npad_layer_records=%d\npin_number_missing=%d\npad_query_missing_or_error=%d\n" nPhysicalPins nPadRecords nPinsWithoutNumber nPadErrors)
     ; Read-only coverage audit. This does NOT assume that the database-wide query
     ; and net-branch traversal identify the same object universe.
@@ -254,7 +313,7 @@ procedure(pcbExport()
       )
     )
     fprintf(log "BLOCKED: net-associated shapes need count/geometry comparison to Allegro.\n")
-    fprintf(log "BLOCKED: standalone copper, vias, mask/paste, drill and refdes texts NOT exported; pad geometry is BBOX PREVIEW ONLY.\n")
+    fprintf(log "BLOCKED: standalone copper, vias, mask/paste, drill NOT exported; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
     close(port) close(log)
     printf("pcbExport v0.8 preview: %d layers, %d segments, %d net shapes\n" nLayers nSeg nShapes)
   )
