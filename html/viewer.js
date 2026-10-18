@@ -133,6 +133,43 @@ function renderVias(layer,useNet,mode){
   }
   return count;
 }
+// Render physical holes separately from REGULAR copper pads. The drill
+// definition is not a copper layer, but its preview is shown only when one
+// of its regular-pad layers is visible. Unsupported/zero geometry is skipped.
+function renderDrills(){
+  if(!$('drills').checked)return 0;
+  let n=0;
+  const hole=(position,drill,rotation)=>{
+    if(!Array.isArray(position)||!drill)return;
+    const [w,h]=drill.size||[];
+    const dia=Number(drill.diameter);
+    const width=Number(w)>0?Number(w):(dia>0?dia:0);
+    const height=Number(h)>0?Number(h):(dia>0?dia:0);
+    if(!(width>0&&height>0))return;
+    const offset=Array.isArray(drill.offset)?drill.offset:[0,0];
+    ctx.save();ctx.translate(position[0],position[1]);ctx.rotate((Number(rotation)||0)*Math.PI/180);
+    ctx.translate(Number(offset[0])||0,Number(offset[1])||0);
+    ctx.fillStyle='#081217';ctx.globalAlpha=1;ctx.beginPath();
+    if(Math.abs(width-height)<1e-6)ctx.arc(0,0,width/2,0,2*Math.PI);
+    else ctx.roundRect(-width/2,-height/2,width,height,Math.min(width,height)/2);
+    ctx.fill();ctx.strokeStyle='#f3e5a2';ctx.lineWidth=Math.max(.6/scale,.45);ctx.stroke();ctx.restore();n++;
+  };
+  // A physical via is rendered once even when 18 layers are visible.
+  for(const v of db.vias||[]){
+    if(net&&$('mode').value==='isolate'&&v.net!==net)continue;
+    if(!(v.pads||[]).some(p=>active.has(p.layer)))continue;
+    hole(v.position,v.drill,v.rotation);
+  }
+  const activePins=new Set();
+  for(const layer of active)for(const p of byLayer.get(layer)?.pads||[])activePins.add(p.pin_id);
+  for(const p of db.pins||[]){
+    if(!p.through||!activePins.has(p.id))continue;
+    if(net&&$('mode').value==='isolate'&&p.net!==net)continue;
+    hole(p.position,p.drill,p.rotation);
+  }
+  return n;
+}
+
 // Text is rendered independently from footprint geometry. Design-level duplicates
 // matching symbol-child glyph records are de-duplicated for display only.
 // Authentic REF DES labels are separate from footprint auxiliary markings.
@@ -216,6 +253,7 @@ function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081
   if($('tracks').checked){for(const layer of layers){ntrack+=renderTracks(byLayer.get(layer)?.tracks||[],layer,useNet,mode)}}ctx.globalAlpha=1;
   for(const layer of layers)npad+=renderPads(layer,useNet,mode);ctx.globalAlpha=1;
   for(const layer of layers)nvia+=renderVias(layer,useNet,mode);ctx.globalAlpha=1;
+  const ndrill=renderDrills();ctx.globalAlpha=1;
   ctx.lineCap='round';ctx.lineJoin='round';
   if($('board').checked){ctx.strokeStyle='#f1f5f4';ctx.lineWidth=1.3/scale;for(const seg of db.board?.outline||[])drawSegment(seg)}
   if($('silkTop').checked||$('silkBottom').checked||$('assemblyTop').checked||$('assemblyBottom').checked||$('placeTop').checked||$('placeBottom').checked){ctx.lineWidth=0.9/scale;for(const item of db.package_graphics||[]){const l=item.layer||'';
@@ -227,7 +265,7 @@ function paint(){if(!db)return;ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#081
   for(const c of db.components||[]){if(!(c.side==='top'&&$('partsTop').checked||c.side==='bottom'&&$('partsBottom').checked))continue;if(!c.position)continue;const [x,y]=c.position;const rr=4/scale;ctx.strokeStyle=c.side==='top'?'#63ffc8':'#ffa568';ctx.lineWidth=1.2/scale;ctx.beginPath();ctx.moveTo(x-rr,y);ctx.lineTo(x+rr,y);ctx.moveTo(x,y-rr);ctx.lineTo(x,y+rr);ctx.stroke();if($('refdes').checked&&scale>0.16){ctx.save();ctx.translate(x,y);ctx.scale(1,-1);ctx.font=`${12/scale}px sans-serif`;ctx.fillStyle=ctx.strokeStyle;ctx.fillText(c.refdes||'',6/scale,0);ctx.restore()}}
   const ntext=drawRealTexts(),npinnum=drawPinNumbers();
   drawSelection();
-  ctx.setTransform(1,0,0,1,0,0);$('overlay').textContent=`可见铜层 ${layers.length}/18 · 已绘制铺铜 ${nzone} · 走线 ${ntrack} · 焊盘图形 ${npad} · Via焊盘 ${nvia} · 文字 ${ntext} · PIN号 ${npinnum} · 网络 ${net||'全部'} · 缩放 ${scale.toFixed(2)} px/mil`;
+  ctx.setTransform(1,0,0,1,0,0);$('overlay').textContent=`可见铜层 ${layers.length}/18 · 已绘制铺铜 ${nzone} · 走线 ${ntrack} · 焊盘图形 ${npad} · Via焊盘 ${nvia} · 钻孔预览 ${ndrill} · 文字 ${ntext} · PIN号 ${npinnum} · 网络 ${net||'全部'} · 缩放 ${scale.toFixed(2)} px/mil`;
 }
 
 function worldAt(e){const rect=canvas.getBoundingClientRect(),u=e.clientX-rect.left-canvas.width/2-pan[0],v=e.clientY-rect.top-canvas.height/2-pan[1];const cs=Math.cos(theta),sn=Math.sin(theta);const xx=cs*u+sn*v,yy=-sn*u+cs*v;return [center[0]+xx/(scale*(mirror?-1:1)),center[1]-yy/scale]}
@@ -319,7 +357,7 @@ function setup(d){if(!Array.isArray(d.layers)||!Array.isArray(d.zones)||!Array.i
   }
   active=new Set([d.layers[0].allegro_layer]);net=null;$('search').value='';$('componentSearch').value='';$('mode').value='all';nets=[...new Set([...d.zones.map(x=>x.net),...d.tracks.map(x=>x.net),...(d.pads||[]).map(x=>x.net),...(d.vias||[]).map(x=>x.net)].filter(Boolean))].sort();
   $('layers').innerHTML=d.layers.map((l,i)=>`<label class="layer"><input type="checkbox" data-layer="${l.allegro_layer}" ${active.has(l.allegro_layer)?'checked':''}><span style="color:${colors[i%colors.length]}">${l.allegro_layer.replace('ETCH/','')}</span><small>${(byLayer.get(l.allegro_layer)?.zones.length||0)} 铜皮</small></label>`).join('');
-  $('stats').textContent=`铜层: ${d.layers.length}\n器件: ${d.components?.length||0}\n走线段: ${d.tracks.length}\nShape: ${d.zones.length}\n有效焊盘图形: ${validPads}\nVia对象: ${d.vias?.length||0}\nVia有效逐层图形: ${validViaPads}\n无图形Via: ${emptyVias}\nNULL/无效占位: ${invalidPads}\n物理 PIN: ${d.pins?.length||0}\n真实文字对象: ${d.text_graphics?.length||0}\nNet 名: ${nets.length}\n来源单位: ${d.source?.units||'未知'}`;
+  $('stats').textContent=`铜层: ${d.layers.length}\n器件: ${d.components?.length||0}\n走线段: ${d.tracks.length}\nShape: ${d.zones.length}\n有效焊盘图形: ${validPads}\nVia对象: ${d.vias?.length||0}\nVia有效逐层图形: ${validViaPads}\n带钻孔定义Via: ${(d.vias||[]).filter(v=>Number(v.drill?.diameter)>0||Number(v.drill?.size?.[0])>0).length}\n无图形Via: ${emptyVias}\nNULL/无效占位: ${invalidPads}\n物理 PIN: ${d.pins?.length||0}\n真实文字对象: ${d.text_graphics?.length||0}\nNet 名: ${nets.length}\n来源单位: ${d.source?.units||'未知'}`;
   $('coverage').textContent=`⚠️ ${d.extraction_status?.zones||'未知'}；PIN=${d.extraction_status?.pins||'未知'}；TEXT=${d.extraction_status?.refdes_text||'not_exported'}；VIA=${d.extraction_status?.vias||'未知'}；独立铜皮=${d.extraction_status?.standalone_copper||'未知'}`;
   searchNets();searchComponents();fit();
 }
@@ -327,7 +365,7 @@ function searchNets(){if(!db)return;const q=$('search').value.trim().toLowerCase
 $('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{$('overlay').textContent=`正在读取 ${f.name}…`;await new Promise(r=>setTimeout(r,25));const d=JSON.parse(await f.text());setup(d)}catch(err){alert(`加载失败: ${err.message}`);$('overlay').textContent=err.message}};
 $('layers').onchange=e=>{const l=e.target.dataset.layer;if(!l)return;e.target.checked?active.add(l):active.delete(l);paint()};
 function selectedLayers(s){active=new Set(s);$('layers').querySelectorAll('input').forEach(x=>x.checked=active.has(x.dataset.layer));paint()}
-const graphicControls=['zones','tracks','pads','vias','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText'];
+const graphicControls=['zones','tracks','pads','vias','drills','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText'];
 function applyPreset(which){
   if(!db)return;
   if(which==='none'){
@@ -336,7 +374,7 @@ function applyPreset(which){
   }
   if(which==='all'){selectedLayers(db.layers.map(x=>x.allegro_layer));return}
   const isTop=which==='top';
-  for(const id of ['zones','tracks','pads','vias','board'])$(id).checked=true;
+  for(const id of ['zones','tracks','pads','vias','drills','board'])$(id).checked=true;
   for(const kind of ['parts','silk','assembly']){
     $(kind+'Top').checked=isTop;$(kind+'Bottom').checked=!isTop;
   }
@@ -346,7 +384,7 @@ function applyPreset(which){
   selectedLayers([isTop?'ETCH/TOP':'ETCH/BOTTOM']);
 }
 $('all').onclick=()=>applyPreset('all');$('none').onclick=()=>applyPreset('none');$('top').onclick=()=>applyPreset('top');$('bottom').onclick=()=>applyPreset('bottom');
-for(const id of ['zones','tracks','pads','vias','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText','mode'])$(id).onchange=paint;
+for(const id of ['zones','tracks','pads','vias','drills','board','partsTop','partsBottom','silkTop','silkBottom','assemblyTop','assemblyBottom','placeTop','placeBottom','refdes','textTop','textBottom','pinNumbers','auxText','mode'])$(id).onchange=paint;
 function rotate(v){theta=v*Math.PI/180;$('angle').value=v;fit()};$('rotL').onclick=()=>rotate((Number($('angle').value)-90+360)%360);$('rotR').onclick=()=>rotate((Number($('angle').value)+90)%360);$('angle').onchange=()=>rotate(Number($('angle').value));$('face').onchange=e=>{mirror=e.target.value==='bottom';paint()};$('fit').onclick=fit;
 function selectNet(value){net=value||null;if(net){$('search').value=net;$('mode').value='highlight'}else{$('search').value='';$('mode').value='all'}searchNets();paint()}
 function selectComponent(value){selectedComponent=value&&componentMap.has(value)?value:null;$('componentSearch').value=selectedComponent||'';searchComponents();paint()}
