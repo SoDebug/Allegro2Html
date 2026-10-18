@@ -79,7 +79,8 @@ procedure(pcbExport()
       nText nShapeSeg nBoardSeg nPkgSeg i j shape void outline layerName
       nShapeVoidSeg nNoNetShapes shapeQuery shapeFound shapeName
       pin physIdx pinNo pinNet pad padQuery padLayer padBox padWidth padHeight
-      padFig nPhysicalPins nPadRecords nPadErrors nPinsWithoutNumber pinName pinRotation nTextGraphics nTextFromSymbols nTextFromDesign textObj)
+      padFig nPhysicalPins nPadRecords nPadErrors nPinsWithoutNumber pinName pinRotation nTextGraphics nTextFromSymbols nTextFromDesign textObj
+      viaObj viaSeen viaCount viaPadCount viaNullPadCount viaDupCount viaPadNum viaPadLayer viaBox viaWidth viaHeight viaQuery viaFig viaNet viaOrd)
     dsn = axlDBGetDesign()
     unless(dsn error("pcbExport: open a PCB design first.\n"))
     layers = axlGetParam("paramLayerGroup:ETCH")->groupMembers
@@ -167,6 +168,56 @@ procedure(pcbExport()
                 pjt08Num(padWidth) pjt08Num(padHeight) pjt08Pair(padBox))
             else
               nPadErrors = nPadErrors + 1
+            )
+          )
+        )
+      )
+    )
+    ; Via objects belong to a net branch, not to a component PIN.
+    ; Use a DBID-keyed table to emit each physical via only once.
+    ; Keep only positive-size REGULAR pads; drill geometry is NOT inferred.
+    fprintf(port "\n],\n\"vias\":[\n")
+    viaSeen = makeTable("pjt09ViaSeen" nil)
+    viaCount = 0 viaPadCount = 0 viaNullPadCount = 0 viaDupCount = 0
+    foreach(net dsn->nets
+      viaNet = net->name
+      foreach(branch net->branches
+        foreach(viaObj branch->children
+          when(viaObj->objType == "via"
+            if(viaSeen[viaObj] then
+              viaDupCount = viaDupCount + 1
+            else
+              viaSeen[viaObj] = t
+              pjt08Comma(port viaCount)
+              viaCount = viaCount + 1
+              fprintf(port "{\"id\":\"VIA%06d\",\"net\":%s,\"position\":%s,\"padstack\":%s,\"rotation\":%s,\"pads\":["
+                viaCount pjt08Quote(viaNet) pjt08XY(viaObj->xy)
+                pjt08Quote(viaObj->name) pjt08Num(viaObj->rotation))
+              viaPadNum = 0
+              foreach(sub layers
+                viaPadLayer = strcat("ETCH/" sub)
+                pad = nil
+                viaQuery = errset(axlDBGetPad(viaObj viaPadLayer "REGULAR") t)
+                when(viaQuery pad = car(viaQuery))
+                if(pad && pad->bBox then
+                  viaBox = pad->bBox
+                  viaWidth = xCoord(cadr(viaBox)) - xCoord(car(viaBox))
+                  viaHeight = yCoord(cadr(viaBox)) - yCoord(car(viaBox))
+                  viaFig = pad->figureName
+                  if(numberp(viaWidth) && numberp(viaHeight) && viaWidth > 0 && viaHeight > 0 && viaFig && viaFig != "NULL" then
+                    pjt08Comma(port viaPadNum)
+                    viaPadNum = viaPadNum + 1
+                    viaPadCount = viaPadCount + 1
+                    fprintf(port "{\"layer\":%s,\"shape\":%s,\"size\":[%s,%s],\"bbox_raw\":%s,\"geometry_verified\":false}"
+                      pjt08Quote(viaPadLayer) pjt08Quote(viaFig) pjt08Num(viaWidth) pjt08Num(viaHeight) pjt08Pair(viaBox))
+                  else
+                    viaNullPadCount = viaNullPadCount + 1
+                  )
+                else
+                  viaNullPadCount = viaNullPadCount + 1
+                )
+              )
+              fprintf(port "]}")
             )
           )
         )
@@ -292,7 +343,7 @@ procedure(pcbExport()
     )
     fprintf(port "\n],\n")
     ; Diagnostics are intentionally honest: all unimplemented categories are UNKNOWN, not EMPTY.
-    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"collected_text_objects_unverified\",\"refdes_text\":\"collected_text_objects_unverified\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"not_exported\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"not_exported\",\"standalone_copper\":\"not_verified\"}\n}")
+    fprintf(port "\"extraction_status\":{\"layers\":\"collected_unverified_order\",\"tracks\":\"net_branch_only\",\"components\":\"collected\",\"zones\":\"net_branch_only_unverified\",\"board_outline\":\"designOutline_only\",\"package_graphics\":\"path_shape_only\",\"package_text\":\"collected_text_objects_unverified\",\"refdes_text\":\"collected_text_objects_unverified\",\"pins\":\"collected_number_unverified\",\"padstacks\":\"regular_pad_bbox_approx_unverified\",\"vias\":\"net_branch_regular_pad_bbox_unverified\",\"soldermask\":\"not_exported\",\"pastemask\":\"not_exported\",\"drill\":\"not_exported\",\"standalone_copper\":\"not_verified\"}\n}")
     fprintf(log "PcbToJson v0.8 core preview\n")
     fprintf(log "layers=%d\ncomponents=%d\ntracks_segments=%d\nnet_associated_shapes=%d\nshape_outer_segments=%d\nshape_void_segments=%d\nboard_outline_segments=%d\npackage_segments=%d\npackage_text_not_exported=%d\n"
       nLayers nComps nSeg nShapes nShapeSeg nShapeVoidSeg nBoardSeg nPkgSeg nText)
@@ -312,8 +363,9 @@ procedure(pcbExport()
         fprintf(log "SHAPE_COVERAGE layer=%s query_failed=true\n" shapeName)
       )
     )
+    fprintf(log "vias=%d\nvia_valid_pad_layer_records=%d\nvia_null_or_invalid_pad_layers=%d\nvia_duplicate_branch_references=%d\n" viaCount viaPadCount viaNullPadCount viaDupCount)
     fprintf(log "BLOCKED: net-associated shapes need count/geometry comparison to Allegro.\n")
-    fprintf(log "BLOCKED: standalone copper, vias, mask/paste, drill NOT exported; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
+    fprintf(log "BLOCKED: standalone copper, mask/paste, drill NOT exported; via REGULAR geometry only as BBOX preview; textual geometry collected but not validated against Allegro; pad geometry is BBOX PREVIEW ONLY.\n")
     close(port) close(log)
     printf("pcbExport v0.8 preview: %d layers, %d segments, %d net shapes\n" nLayers nSeg nShapes)
   )
